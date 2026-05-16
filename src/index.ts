@@ -158,6 +158,8 @@ app.post("/webhook", async (req: Request, res: Response) => {
       console.log(`[GROUP DEBUG] mentionedIds:`, payload.mentionedIds);
       console.log(`[GROUP DEBUG] _data.mentionedJidList:`, payload._data?.mentionedJidList);
       console.log(`[GROUP DEBUG] body: ${userMessage}`);
+      console.log(`[GROUP DEBUG] full payload keys:`, Object.keys(payload));
+      console.log(`[GROUP DEBUG] full payload:`, JSON.stringify(payload, null, 2).slice(0, 1500));
     }
 
     // In groups, only reply when bot is mentioned (@tagged) or replied to
@@ -173,7 +175,8 @@ app.post("/webhook", async (req: Request, res: Response) => {
           mentionList.some((id: string) => id.includes(num)) ||
           userMessage.includes(`@${num}`)
       );
-      const isReplyToBot = payload._data?.quotedMsg?.fromMe === true;
+      const replyParticipant: string = payload.replyTo?.participant || "";
+      const isReplyToBot = botMentions.some((num) => replyParticipant.includes(num));
       if (!isMentioned && !isReplyToBot) return;
     }
 
