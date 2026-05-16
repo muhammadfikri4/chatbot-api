@@ -72,13 +72,14 @@ jobs:
           MAX_TOKENS: ${{ secrets.MAX_TOKENS }}
           TEMPERATURE: ${{ secrets.TEMPERATURE }}
           APP_PORT: ${{ secrets.APP_PORT }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT
+          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN
           script: |
             APP_DIR="$HOME/app/waha-chatbot"
 
@@ -127,6 +128,21 @@ jobs:
               -v $(pwd)/knowledge:/app/knowledge:ro \
               -p ${APP_PORT:-3001}:${APP_PORT:-3001} \
               waha-chatbot:latest
+
+            # Setup Nginx reverse proxy
+            if [ -n "$SERVER_DOMAIN" ]; then
+              export SERVER_DOMAIN="${SERVER_DOMAIN}"
+              export APP_PORT="${APP_PORT:-3001}"
+              envsubst '${SERVER_DOMAIN} ${APP_PORT}' < nginx.conf > /tmp/waha-chatbot.conf
+              sudo cp /tmp/waha-chatbot.conf /etc/nginx/sites-available/waha-chatbot
+              sudo ln -sf /etc/nginx/sites-available/waha-chatbot /etc/nginx/sites-enabled/
+              sudo nginx -t && sudo systemctl reload nginx
+
+              # SSL with Let's Encrypt (skip if already exists)
+              if [ ! -d "/etc/letsencrypt/live/${SERVER_DOMAIN}" ]; then
+                sudo certbot --nginx -d ${SERVER_DOMAIN} --non-interactive --agree-tos -m admin@${SERVER_DOMAIN}
+              fi
+            fi
 
       - name: Notify Discord - Success
         if: success()
