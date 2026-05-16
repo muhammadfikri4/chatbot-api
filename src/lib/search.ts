@@ -4,15 +4,24 @@ interface SearchResult {
   snippet: string;
 }
 
+const GOOGLE_API_KEY = process.env.GOOGLE_SEARCH_API_KEY || "";
+const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX || "";
+
 export async function searchWeb(query: string): Promise<SearchResult[]> {
-  // Try DuckDuckGo Lite first, fallback to HTML
-  const methods = [searchDDGLite, searchDDGHTML];
+  const methods: Array<() => Promise<SearchResult[]>> = [];
+
+  if (GOOGLE_API_KEY && GOOGLE_CX) {
+    methods.push(() => searchGoogle(query));
+  }
+  methods.push(() => searchDDGLite(query));
+  methods.push(() => searchDDGHTML(query));
 
   for (const method of methods) {
     try {
-      const results = await method(query);
+      const results = await method();
       if (results.length > 0) {
         console.log(`[Search] Found ${results.length} results`);
+        results.forEach((r) => console.log(`[Search]   - ${r.title}: ${r.url}`));
         return results;
       }
     } catch (err) {
@@ -24,7 +33,32 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
   return [];
 }
 
+// Google Custom Search JSON API — free 100 queries/day
+async function searchGoogle(query: string): Promise<SearchResult[]> {
+  const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=3&hl=id`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`[Search Google] Error ${res.status}: ${text}`);
+    return [];
+  }
+
+  const data = await res.json() as {
+    items?: Array<{ title: string; link: string; snippet: string }>;
+  };
+
+  return (data.items || []).slice(0, 3).map((item) => ({
+    title: item.title,
+    url: item.link,
+    snippet: item.snippet || "",
+  }));
+}
+
 async function searchDDGLite(query: string): Promise<SearchResult[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
   const res = await fetch("https://lite.duckduckgo.com/lite/", {
     method: "POST",
     headers: {
@@ -33,14 +67,15 @@ async function searchDDGLite(query: string): Promise<SearchResult[]> {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     },
     body: `q=${encodeURIComponent(query)}`,
+    signal: controller.signal,
   });
 
+  clearTimeout(timeout);
   if (!res.ok) return [];
 
   const html = await res.text();
   const results: SearchResult[] = [];
 
-  // DDG Lite uses table rows with class "result-link" for titles
   const linkMatches = [...html.matchAll(/<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
   const snippetMatches = [...html.matchAll(/<td class="result-snippet">([^<]+)/g)];
 
@@ -58,14 +93,18 @@ async function searchDDGLite(query: string): Promise<SearchResult[]> {
 }
 
 async function searchDDGHTML(query: string): Promise<SearchResult[]> {
-  const encoded = encodeURIComponent(query);
-  const res = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     },
+    signal: controller.signal,
   });
 
+  clearTimeout(timeout);
   if (!res.ok) return [];
 
   const html = await res.text();
@@ -115,7 +154,6 @@ export async function fetchPageContent(url: string): Promise<string> {
     });
 
     clearTimeout(timeout);
-
     if (!res.ok) return "";
 
     const html = await res.text();
