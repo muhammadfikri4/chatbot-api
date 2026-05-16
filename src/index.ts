@@ -250,6 +250,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
       console.log(`[${chatId}] Searching: ${query}`);
 
       const results = await searchWeb(query);
+      console.log(`[${chatId}] Search results: ${results.length}`, results.map((r) => r.url));
       if (results.length > 0) {
         // Fetch page content from top results
         const pages = await Promise.all(
