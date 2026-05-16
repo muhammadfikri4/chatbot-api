@@ -160,7 +160,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
       console.log(`[GROUP DEBUG] body: ${userMessage}`);
     }
 
-    // In groups, only reply when bot is mentioned (@tagged)
+    // In groups, only reply when bot is mentioned (@tagged) or replied to
     if (isGroup) {
       const botMentions = (process.env.BOT_MENTIONS || "")
         .split(",")
@@ -173,7 +173,8 @@ app.post("/webhook", async (req: Request, res: Response) => {
           mentionList.some((id: string) => id.includes(num)) ||
           userMessage.includes(`@${num}`)
       );
-      if (!isMentioned) return;
+      const isReplyToBot = payload._data?.quotedMsg?.fromMe === true;
+      if (!isMentioned && !isReplyToBot) return;
     }
 
     // Identify sender (owner detection)
