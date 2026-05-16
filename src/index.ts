@@ -5,6 +5,7 @@ import express, { Request, Response } from "express";
 import { chat } from "./lib/openrouter";
 import { sendText, startTyping, stopTyping } from "./lib/waha";
 import { searchWeb, fetchPageContent } from "./lib/search";
+import { transcribeAudio } from "./lib/transcribe";
 
 const app = express();
 app.use(express.json());
@@ -146,9 +147,11 @@ app.post("/webhook", async (req: Request, res: Response) => {
     chatId = payload.from;
     const userMessage: string = payload.body || "";
     const hasMedia = payload.hasMedia && payload.mediaUrl;
-    const isImage = hasMedia && payload._data?.mimetype?.startsWith("image/");
+    const mimetype: string = payload._data?.mimetype || "";
+    const isImage = hasMedia && mimetype.startsWith("image/");
+    const isAudio = hasMedia && (mimetype.startsWith("audio/") || mimetype === "audio/ogg; codecs=opus");
 
-    if (!userMessage.trim() && !isImage) return;
+    if (!userMessage.trim() && !isImage && !isAudio) return;
 
     const isGroup = chatId.endsWith("@g.us");
 
@@ -202,29 +205,54 @@ app.post("/webhook", async (req: Request, res: Response) => {
       return;
     }
 
+    // Add reply context if replying to a message
+    const replyContext = payload.replyTo?.body
+      ? `[Membalas pesan: "${payload.replyTo.body}"]\n\n`
+      : "";
+
     // Build conversation history
     if (!conversations.has(chatId)) {
       conversations.set(chatId, []);
     }
     const history = conversations.get(chatId)!;
 
-    // Build user message content (text, image, or both)
-    if (isImage) {
+    // Prepend reply context to message
+    const messageWithContext = replyContext ? `${replyContext}${cleanMessage}` : cleanMessage;
+
+    // Build user message content (text, image, audio)
+    if (isAudio) {
+      try {
+        const mediaUrl: string = payload.mediaUrl;
+        console.log(`[${chatId}] Audio/VN: ${mediaUrl}`);
+
+        const transcript = await transcribeAudio(mediaUrl);
+        console.log(`[${chatId}] Transcript: ${transcript}`);
+
+        const vnMessage = replyContext
+          ? `${replyContext}[Voice Note - transcript: "${transcript}"]`
+          : `[Voice Note - transcript: "${transcript}"]`;
+        history.push({ role: "user", content: vnMessage });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${chatId}] Failed to transcribe audio:`, msg);
+        history.push({ role: "user", content: messageWithContext || "Ada voice note yang tidak bisa diproses." });
+      }
+    } else if (isImage) {
       try {
         const mediaUrl: string = payload.mediaUrl;
         console.log(`[${chatId}] Image: ${mediaUrl}`);
 
         const content: Array<Record<string, unknown>> = [];
-        content.push({ type: "text", text: cleanMessage || "Jelaskan gambar ini." });
+        content.push({ type: "text", text: messageWithContext || "Jelaskan gambar ini." });
         content.push({ type: "image_url", image_url: { url: mediaUrl } });
         history.push({ role: "user", content });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[${chatId}] Failed to process image:`, msg);
-        history.push({ role: "user", content: cleanMessage || "Ada gambar yang tidak bisa diproses." });
+        history.push({ role: "user", content: messageWithContext || "Ada gambar yang tidak bisa diproses." });
       }
     } else {
-      history.push({ role: "user", content: cleanMessage });
+      history.push({ role: "user", content: messageWithContext });
     }
 
     // Trim history
