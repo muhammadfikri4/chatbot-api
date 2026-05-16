@@ -3,7 +3,6 @@ const MODELS = (process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini")
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
-const MAX_RETRIES = 2;
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -36,8 +35,30 @@ async function tryModel(
     messages: [{ role: "system", content: systemPrompt }, ...messages],
   });
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body,
+  });
+
+  if (res.ok) {
+    const data: OpenRouterResponse = await res.json();
+    console.log(`[OpenRouter] Success with model: ${model}`);
+    return data.choices[0].message.content;
+  }
+
+  // Rate limited — wait once then retry
+  if (res.status === 429) {
+    const text = await res.text();
+    const retryMatch = text.match(/"retry_after_seconds":(\d+)/);
+    const waitSec = retryMatch ? parseInt(retryMatch[1]) : 10;
+    console.log(`[OpenRouter] ${model} rate limited, retrying in ${waitSec}s`);
+    await sleep(waitSec * 1000);
+
+    const res2 = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
@@ -46,28 +67,19 @@ async function tryModel(
       body,
     });
 
-    if (res.ok) {
-      const data: OpenRouterResponse = await res.json();
-      console.log(`[OpenRouter] Success with model: ${model}`);
+    if (res2.ok) {
+      const data: OpenRouterResponse = await res2.json();
+      console.log(`[OpenRouter] Success with model: ${model} (retry)`);
       return data.choices[0].message.content;
     }
 
-    // Rate limited — wait and retry once
-    if (res.status === 429 && attempt < MAX_RETRIES - 1) {
-      const text = await res.text();
-      const retryMatch = text.match(/"retry_after_seconds":(\d+)/);
-      const waitSec = retryMatch ? parseInt(retryMatch[1]) : 10;
-      console.log(`[OpenRouter] ${model} rate limited, retrying in ${waitSec}s`);
-      await sleep(waitSec * 1000);
-      continue;
-    }
-
-    // Other error — don't retry, move to next model
-    const text = await res.text();
-    console.error(`[OpenRouter] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
+    console.log(`[OpenRouter] ${model} still failed after retry, switching model`);
     return null;
   }
 
+  // Other error
+  const text = await res.text();
+  console.error(`[OpenRouter] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
   return null;
 }
 
