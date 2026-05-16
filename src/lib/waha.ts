@@ -34,6 +34,22 @@ export async function sendText(
   return res.json();
 }
 
+export async function startTyping(chatId: string): Promise<void> {
+  await fetch(`${WAHA_API_URL}/api/startTyping`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ session: WAHA_SESSION, chatId }),
+  }).catch(() => {});
+}
+
+export async function stopTyping(chatId: string): Promise<void> {
+  await fetch(`${WAHA_API_URL}/api/stopTyping`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ session: WAHA_SESSION, chatId }),
+  }).catch(() => {});
+}
+
 export async function downloadMedia(messageId: string): Promise<unknown> {
   const res = await fetch(
     `${WAHA_API_URL}/api/${WAHA_SESSION}/messages/${messageId}/download`,

@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import express, { Request, Response } from "express";
 import { chat } from "./lib/openrouter";
-import { sendText } from "./lib/waha";
+import { sendText, startTyping, stopTyping } from "./lib/waha";
 
 const app = express();
 app.use(express.json());
@@ -233,8 +233,13 @@ app.post("/webhook", async (req: Request, res: Response) => {
       dynamicPrompt += `\n\nPengirim pesan ini adalah: ${senderLabel}. Sapa dia sesuai konteks.`;
     }
 
+    // Show typing indicator while AI is thinking
+    await startTyping(chatId);
+
     // Call OpenRouter
     const reply = await chat(dynamicPrompt, history as never);
+
+    await stopTyping(chatId);
 
     history.push({ role: "assistant", content: reply });
     console.log(`[${chatId}] Bot: ${reply}`);
