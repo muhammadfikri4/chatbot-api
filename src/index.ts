@@ -12,36 +12,116 @@ app.use(express.json());
 const conversations = new Map<string, Array<{ role: string; content: unknown }>>();
 const MAX_HISTORY = 20;
 
-// Load knowledge from all .md files in knowledge/ folder
-function loadKnowledge(): string {
-  const knowledgeDir = path.join(__dirname, "..", "knowledge");
-  if (!fs.existsSync(knowledgeDir)) return "";
+// --- Knowledge Management ---
+const KNOWLEDGE_DIR = path.join(__dirname, "..", "knowledge");
+const KNOWLEDGE_FILE = path.join(KNOWLEDGE_DIR, "base.md");
 
-  const files = fs.readdirSync(knowledgeDir).filter((f) => f.endsWith(".md"));
+function loadKnowledge(): string {
+  if (!fs.existsSync(KNOWLEDGE_DIR)) return "";
+  const files = fs.readdirSync(KNOWLEDGE_DIR).filter((f) => f.endsWith(".md"));
   return files
-    .map((f) => fs.readFileSync(path.join(knowledgeDir, f), "utf-8"))
+    .map((f) => fs.readFileSync(path.join(KNOWLEDGE_DIR, f), "utf-8"))
     .join("\n\n---\n\n");
 }
 
-const knowledge = loadKnowledge();
-console.log(`Loaded knowledge: ${knowledge.length} characters`);
+function getKnowledgeEntries(): string[] {
+  if (!fs.existsSync(KNOWLEDGE_FILE)) return [];
+  const content = fs.readFileSync(KNOWLEDGE_FILE, "utf-8").trim();
+  if (!content) return [];
+  return content.split("\n\n").filter((e) => e.trim());
+}
 
-const SYSTEM_PROMPT = `${
-  process.env.SYSTEM_PROMPT ||
-  `Kamu adalah teman ngobrol di WhatsApp. Aturan penting:
+function saveKnowledgeEntries(entries: string[]): void {
+  if (!fs.existsSync(KNOWLEDGE_DIR)) fs.mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+  fs.writeFileSync(KNOWLEDGE_FILE, entries.join("\n\n") + "\n");
+}
+
+let currentKnowledge = loadKnowledge();
+console.log(`Loaded knowledge: ${currentKnowledge.length} characters`);
+
+function buildSystemPrompt(): string {
+  return `${
+    process.env.SYSTEM_PROMPT ||
+    `Kamu adalah teman ngobrol di WhatsApp. Aturan penting:
 - Jawab SINGKAT, maksimal 1-3 kalimat kayak chat biasa. Jangan panjang lebar.
 - JANGAN pernah copy-paste dari knowledge base. Selalu paraphrase pakai kata-kata sendiri.
 - Pakai bahasa gaul, santai, kayak ngobrol sama temen. Boleh bercanda dan roasting ringan.
 - Jangan pakai bullet point atau format panjang kecuali diminta.
 - Jangan mulai jawaban dengan "Oke", "Baik", "Tentu" atau kata formal lainnya.
 - Jawab dalam bahasa yang sama dengan pengguna.`
-}
+  }
 
 Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
 
 === KNOWLEDGE BASE ===
-${knowledge}
+${currentKnowledge}
 === END KNOWLEDGE BASE ===`;
+}
+
+let systemPrompt = buildSystemPrompt();
+
+function reloadKnowledge(): void {
+  currentKnowledge = loadKnowledge();
+  systemPrompt = buildSystemPrompt();
+  console.log(`Knowledge reloaded: ${currentKnowledge.length} characters`);
+}
+
+// --- Knowledge Commands (owner only) ---
+async function handleKnowledgeCommand(
+  chatId: string,
+  command: string
+): Promise<boolean> {
+  const parts = command.replace(/^!knowledge\s*/, "").trim();
+  const action = parts.split(/\s+/)[0]?.toLowerCase();
+  const arg = parts.slice(action?.length || 0).trim();
+
+  if (action === "add" && arg) {
+    const entries = getKnowledgeEntries();
+    entries.push(arg);
+    saveKnowledgeEntries(entries);
+    reloadKnowledge();
+    await sendText(chatId, `✅ Knowledge ditambahkan:\n"${arg}"\n\nTotal: ${entries.length} entries`);
+    return true;
+  }
+
+  if (action === "list") {
+    const entries = getKnowledgeEntries();
+    if (entries.length === 0) {
+      await sendText(chatId, "📋 Knowledge kosong.");
+      return true;
+    }
+    const list = entries.map((e, i) => `${i + 1}. ${e.slice(0, 100)}${e.length > 100 ? "..." : ""}`).join("\n");
+    await sendText(chatId, `📋 Knowledge (${entries.length} entries):\n\n${list}`);
+    return true;
+  }
+
+  if (action === "delete" && arg) {
+    const entries = getKnowledgeEntries();
+    const idx = parseInt(arg) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= entries.length) {
+      await sendText(chatId, `❌ Nomor tidak valid. Range: 1-${entries.length}`);
+      return true;
+    }
+    const removed = entries.splice(idx, 1)[0];
+    saveKnowledgeEntries(entries);
+    reloadKnowledge();
+    await sendText(chatId, `🗑️ Dihapus:\n"${removed.slice(0, 100)}"\n\nSisa: ${entries.length} entries`);
+    return true;
+  }
+
+  if (action === "clear") {
+    saveKnowledgeEntries([]);
+    reloadKnowledge();
+    await sendText(chatId, "🗑️ Semua knowledge dihapus.");
+    return true;
+  }
+
+  await sendText(
+    chatId,
+    `📖 Knowledge Commands:\n\n!knowledge add <teks>\n!knowledge list\n!knowledge delete <nomor>\n!knowledge clear`
+  );
+  return true;
+}
 
 // Health check
 app.get("/", (_req: Request, res: Response) => {
@@ -102,6 +182,16 @@ app.post("/webhook", async (req: Request, res: Response) => {
 
     console.log(`[${chatId}] ${isOwner ? "[OWNER]" : ""} User: ${cleanMessage || "[image]"}`);
 
+    // Handle knowledge commands (owner only)
+    if (cleanMessage.startsWith("!knowledge")) {
+      if (!isOwner) {
+        await sendText(chatId, "⛔ Cuma Fikri yang bisa pake command ini.");
+        return;
+      }
+      await handleKnowledgeCommand(chatId, cleanMessage);
+      return;
+    }
+
     // Build conversation history
     if (!conversations.has(chatId)) {
       conversations.set(chatId, []);
@@ -133,7 +223,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
     }
 
     // Build dynamic system prompt
-    let dynamicPrompt = SYSTEM_PROMPT;
+    let dynamicPrompt = systemPrompt;
     if (isGroup && ownerId) {
       dynamicPrompt += `\n\nINFO GRUP:
 - Kalau mau refer ke Fikri di grup, tulis @${ownerId} supaya ke-tag. Jangan pakai link wa.me.
