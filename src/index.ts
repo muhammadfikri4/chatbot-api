@@ -278,8 +278,6 @@ app.post("/webhook", async (req: Request, res: Response) => {
       }
     }
 
-    await stopTyping(chatId);
-
     history.push({ role: "assistant", content: reply });
     console.log(`[${chatId}] Bot: ${reply}`);
 
@@ -289,8 +287,10 @@ app.post("/webhook", async (req: Request, res: Response) => {
       mentions.push(`${ownerId}@lid`);
     }
 
+    await stopTyping(chatId);
     await sendText(chatId, reply, mentions);
   } catch (err: unknown) {
+    await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Error handling webhook:", msg);
   }
