@@ -145,7 +145,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
     // Log all incoming events for debugging
     console.log(`[WEBHOOK] event: ${event}, hasPayload: ${!!payload}, fromMe: ${payload?.fromMe}`);
 
-    if ((event !== "message" && event !== "message.any") || !payload || payload.fromMe) return;
+    if (event !== "message" || !payload || payload.fromMe) return;
 
     chatId = payload.from;
     const userMessage: string = payload.body || "";
