@@ -1,0 +1,163 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  set-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+    steps:
+      - name: Set environment
+        id: set-env
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=development" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: set-environment
+    environment: ${{ needs.set-environment.outputs.environment }}
+    env:
+      SERVICE_NAME: "WAHA Chatbot (${{ needs.set-environment.outputs.environment }})"
+      CONTAINER_NAME: waha-chatbot-${{ needs.set-environment.outputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Commits
+        id: commits
+        run: |
+          COMMITS=$(echo '${{ toJson(github.event.commits) }}' | jq -r '.[] | "• `\(.id[0:7])` \(.message)"' | head -10)
+          echo "list<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Notify Discord - Start
+        uses: tsickert/discord-webhook@v5.3.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK }}
+          embed-title: "${{ env.SERVICE_NAME }}"
+          embed-description: |
+            **Pipeline Start**
+
+            **Branch:** `${{ github.ref_name }}`
+            **Changes:**
+            ${{ steps.commits.outputs.list }}
+
+            **Author:** ${{ github.event.head_commit.author.name }}
+          embed-color: 16776960
+          embed-url: ${{ github.event.head_commit.url }}
+
+      - name: Deploy via SSH
+        env:
+          WAHA_API_URL: ${{ secrets.WAHA_API_URL }}
+          WAHA_API_KEY: ${{ secrets.WAHA_API_KEY }}
+          WAHA_SESSION: ${{ secrets.WAHA_SESSION }}
+          BOT_MENTIONS: ${{ secrets.BOT_MENTIONS }}
+          OWNER_MENTION_ID: ${{ secrets.OWNER_MENTION_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
+          MAX_TOKENS: ${{ secrets.MAX_TOKENS }}
+          TEMPERATURE: ${{ secrets.TEMPERATURE }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT
+          script: |
+            APP_DIR="$HOME/app/waha-chatbot"
+
+            if [ -d "$APP_DIR/.git" ]; then
+              cd $APP_DIR
+              # Backup knowledge sebelum pull
+              if [ -d "knowledge" ]; then
+                cp -r knowledge /tmp/waha-knowledge-backup
+              fi
+              git fetch origin ${{ github.ref_name }}
+              git reset --hard origin/${{ github.ref_name }}
+              # Restore knowledge setelah pull
+              if [ -d "/tmp/waha-knowledge-backup" ]; then
+                cp -r /tmp/waha-knowledge-backup knowledge
+                rm -rf /tmp/waha-knowledge-backup
+              fi
+            else
+              mkdir -p $HOME/app
+              git clone -b ${{ github.ref_name }} https://github.com/${{ github.repository }}.git $APP_DIR
+              cd $APP_DIR
+              mkdir -p knowledge
+            fi
+
+            # Generate .env from GitHub Secrets
+            cat > .env <<EOL
+            WAHA_API_URL=${WAHA_API_URL}
+            WAHA_API_KEY=${WAHA_API_KEY}
+            WAHA_SESSION=${WAHA_SESSION}
+            BOT_MENTIONS=${BOT_MENTIONS}
+            OWNER_MENTION_ID=${OWNER_MENTION_ID}
+            OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+            OPENROUTER_MODEL=${OPENROUTER_MODEL}
+            MAX_TOKENS=${MAX_TOKENS}
+            TEMPERATURE=${TEMPERATURE}
+            PORT=${APP_PORT}
+            EOL
+
+            # Build & run with Docker
+            docker build -t waha-chatbot:latest .
+            docker stop $CONTAINER_NAME 2>/dev/null || true
+            docker rm $CONTAINER_NAME 2>/dev/null || true
+            docker run -d \
+              --name $CONTAINER_NAME \
+              --restart unless-stopped \
+              --env-file .env \
+              -v $(pwd)/knowledge:/app/knowledge:ro \
+              -p ${APP_PORT:-3001}:${APP_PORT:-3001} \
+              waha-chatbot:latest
+
+      - name: Notify Discord - Success
+        if: success()
+        uses: tsickert/discord-webhook@v5.3.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK }}
+          embed-title: "${{ env.SERVICE_NAME }}"
+          embed-description: |
+            **Pipeline Success**
+
+            **Branch:** `${{ github.ref_name }}`
+            **Changes:**
+            ${{ steps.commits.outputs.list }}
+
+            **Author:** ${{ github.event.head_commit.author.name }}
+          embed-color: 3066993
+          embed-url: ${{ github.event.head_commit.url }}
+
+      - name: Notify Discord - Failure
+        if: failure()
+        uses: tsickert/discord-webhook@v5.3.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK }}
+          embed-title: "${{ env.SERVICE_NAME }}"
+          embed-description: |
+            **Pipeline Failed**
+
+            **Branch:** `${{ github.ref_name }}`
+            **Changes:**
+            ${{ steps.commits.outputs.list }}
+
+            **Author:** ${{ github.event.head_commit.author.name }}
+          embed-color: 15158332
+          embed-url: ${{ github.event.head_commit.url }}
