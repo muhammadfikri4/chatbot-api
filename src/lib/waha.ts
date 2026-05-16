@@ -34,6 +34,14 @@ export async function sendText(
   return res.json();
 }
 
+export async function sendSeen(chatId: string): Promise<void> {
+  await fetch(`${WAHA_API_URL}/api/sendSeen`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ session: WAHA_SESSION, chatId }),
+  }).catch(() => {});
+}
+
 export async function startTyping(chatId: string): Promise<void> {
   await fetch(`${WAHA_API_URL}/api/startTyping`, {
     method: "POST",
@@ -48,6 +56,29 @@ export async function stopTyping(chatId: string): Promise<void> {
     headers: headers(),
     body: JSON.stringify({ session: WAHA_SESSION, chatId }),
   }).catch(() => {});
+}
+
+export async function sendVoice(chatId: string, base64Audio: string): Promise<unknown> {
+  const res = await fetch(`${WAHA_API_URL}/api/sendVoice`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      session: WAHA_SESSION,
+      chatId,
+      file: {
+        mimetype: "audio/mpeg",
+        data: base64Audio,
+      },
+      convert: true,
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`WAHA sendVoice error ${res.status}: ${errBody}`);
+  }
+
+  return res.json();
 }
 
 export async function getMediaUrl(messageId: string): Promise<string> {

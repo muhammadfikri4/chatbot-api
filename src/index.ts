@@ -3,7 +3,8 @@ import fs from "fs";
 import path from "path";
 import express, { Request, Response } from "express";
 import { chat } from "./lib/openrouter";
-import { sendText, startTyping, stopTyping, getMediaUrl } from "./lib/waha";
+import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl } from "./lib/waha";
+import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
 
@@ -53,6 +54,11 @@ function buildSystemPrompt(): string {
 - Jawab dalam bahasa yang sama dengan pengguna.
 - DILARANG KERAS mencampur atau menyelipkan bahasa China/Mandarin/中文 dalam jawaban, KECUALI pengguna memang menggunakan bahasa tersebut.`
   }
+
+FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris pertama, sebelum isi jawaban:
+- [TEXT] — jika user tidak minta dibalas pakai suara (DEFAULT, gunakan ini kalau ragu)
+- [VOICE] — HANYA jika user secara eksplisit minta dibalas pakai suara/voice/vn/audio
+Contoh: user bilang "jawab pake vn dong" → baris pertama: [VOICE], lalu jawaban. User bilang "halo" → baris pertama: [TEXT], lalu jawaban.
 
 FITUR SEARCH: Jika user bertanya sesuatu yang butuh informasi terbaru/real-time (berita, harga, event, cuaca, jadwal, dll) dan kamu tidak punya infonya, JANGAN jawab "saya tidak tahu". Sebaliknya, jawab HANYA dengan format: [SEARCH: kata kunci pencarian]. Contoh: user tanya "harga iPhone 16 sekarang" → jawab "[SEARCH: harga iPhone 16 terbaru 2026]". Jangan tambahkan teks lain selain format tersebut. Untuk pertanyaan yang bisa kamu jawab sendiri (pengetahuan umum, knowledge base, matematika, dll), jawab langsung tanpa search.
 
@@ -288,7 +294,8 @@ app.post("/webhook", async (req: Request, res: Response) => {
       dynamicPrompt += `\n\nPengirim pesan ini adalah: ${senderLabel}. Sapa dia sesuai konteks.`;
     }
 
-    // Show typing indicator while AI is thinking
+    // Mark message as read + show typing indicator
+    await sendSeen(chatId);
     await startTyping(chatId);
 
     // Call OpenRouter
@@ -329,8 +336,12 @@ app.post("/webhook", async (req: Request, res: Response) => {
       }
     }
 
+    // Parse format tag from model reply (can be at start or end)
+    const wantVoice = /\[VOICE\]/i.test(reply);
+    reply = reply.replace(/\[(TEXT|VOICE)\]/gi, "").trim();
+
     history.push({ role: "assistant", content: reply });
-    console.log(`[${chatId}] Bot: ${reply}`);
+    console.log(`[${chatId}] Bot: ${reply}${wantVoice ? " [VOICE]" : ""}`);
 
     // Check if reply mentions owner
     const mentions: string[] = [];
@@ -339,7 +350,19 @@ app.post("/webhook", async (req: Request, res: Response) => {
     }
 
     await stopTyping(chatId);
-    await sendText(chatId, reply, mentions);
+
+    if (wantVoice) {
+      try {
+        const audioBase64 = await textToSpeech(reply);
+        await sendVoice(chatId, audioBase64);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${chatId}] TTS failed, sending text only:`, msg);
+        await sendText(chatId, reply, mentions);
+      }
+    } else {
+      await sendText(chatId, reply, mentions);
+    }
   } catch (err: unknown) {
     if (chatId) await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
