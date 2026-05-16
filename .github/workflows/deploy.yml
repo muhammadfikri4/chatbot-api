@@ -73,15 +73,14 @@ jobs:
           TEMPERATURE: ${{ secrets.TEMPERATURE }}
           APP_PORT: ${{ secrets.APP_PORT }}
           SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
-          GOOGLE_SEARCH_API_KEY: ${{ secrets.GOOGLE_SEARCH_API_KEY }}
-          GOOGLE_SEARCH_CX: ${{ secrets.GOOGLE_SEARCH_CX }}
+          SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,GOOGLE_SEARCH_API_KEY,GOOGLE_SEARCH_CX
+          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,SERP_API_KEY
           script: |
             APP_DIR="$HOME/app/waha-chatbot"
 
@@ -117,8 +116,7 @@ jobs:
             MAX_TOKENS=${MAX_TOKENS}
             TEMPERATURE=${TEMPERATURE}
             PORT=${APP_PORT}
-            GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY}
-            GOOGLE_SEARCH_CX=${GOOGLE_SEARCH_CX}
+            SERP_API_KEY=${SERP_API_KEY}
             EOL
 
             # Build & run with Docker

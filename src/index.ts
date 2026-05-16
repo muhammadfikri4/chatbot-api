@@ -136,12 +136,14 @@ app.get("/", (_req: Request, res: Response) => {
 app.post("/webhook", async (req: Request, res: Response) => {
   res.json({ ok: true });
 
+  let chatId = "";
+
   try {
     const { event, payload } = req.body;
 
     if (event !== "message" || !payload || payload.fromMe) return;
 
-    const chatId: string = payload.from;
+    chatId = payload.from;
     const userMessage: string = payload.body || "";
     const hasMedia = payload.hasMedia && payload.mediaUrl;
     const isImage = hasMedia && payload._data?.mimetype?.startsWith("image/");
@@ -290,7 +292,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
     await stopTyping(chatId);
     await sendText(chatId, reply, mentions);
   } catch (err: unknown) {
-    await stopTyping(chatId).catch(() => {});
+    if (chatId) await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Error handling webhook:", msg);
   }

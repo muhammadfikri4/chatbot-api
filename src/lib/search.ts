@@ -4,14 +4,13 @@ interface SearchResult {
   snippet: string;
 }
 
-const GOOGLE_API_KEY = process.env.GOOGLE_SEARCH_API_KEY || "";
-const GOOGLE_CX = process.env.GOOGLE_SEARCH_CX || "";
+const SERP_API_KEY = process.env.SERP_API_KEY || "";
 
 export async function searchWeb(query: string): Promise<SearchResult[]> {
   const methods: Array<() => Promise<SearchResult[]>> = [];
 
-  if (GOOGLE_API_KEY && GOOGLE_CX) {
-    methods.push(() => searchGoogle(query));
+  if (SERP_API_KEY) {
+    methods.push(() => searchSerpAPI(query));
   }
   methods.push(() => searchDDGLite(query));
   methods.push(() => searchDDGHTML(query));
@@ -33,22 +32,22 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
   return [];
 }
 
-// Google Custom Search JSON API — free 100 queries/day
-async function searchGoogle(query: string): Promise<SearchResult[]> {
-  const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}&num=3&hl=id`;
+// SerpAPI — free 100 searches/month
+async function searchSerpAPI(query: string): Promise<SearchResult[]> {
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${SERP_API_KEY}&engine=google&hl=id&num=3`;
 
   const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text();
-    console.error(`[Search Google] Error ${res.status}: ${text}`);
+    console.error(`[Search SerpAPI] Error ${res.status}: ${text.slice(0, 200)}`);
     return [];
   }
 
   const data = await res.json() as {
-    items?: Array<{ title: string; link: string; snippet: string }>;
+    organic_results?: Array<{ title: string; link: string; snippet: string }>;
   };
 
-  return (data.items || []).slice(0, 3).map((item) => ({
+  return (data.organic_results || []).slice(0, 3).map((item) => ({
     title: item.title,
     url: item.link,
     snippet: item.snippet || "",
