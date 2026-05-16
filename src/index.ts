@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import express, { Request, Response } from "express";
 import { chat } from "./lib/openrouter";
-import { sendText, startTyping, stopTyping } from "./lib/waha";
+import { sendText, startTyping, stopTyping, getMediaUrl } from "./lib/waha";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
 
@@ -142,14 +142,20 @@ app.post("/webhook", async (req: Request, res: Response) => {
   try {
     const { event, payload } = req.body;
 
-    if (event !== "message" || !payload || payload.fromMe) return;
+    // Log all incoming events for debugging
+    console.log(`[WEBHOOK] event: ${event}, hasPayload: ${!!payload}, fromMe: ${payload?.fromMe}`);
+
+    if ((event !== "message" && event !== "message.any") || !payload || payload.fromMe) return;
 
     chatId = payload.from;
     const userMessage: string = payload.body || "";
-    const hasMedia = payload.hasMedia && payload.mediaUrl;
-    const mimetype: string = payload._data?.mimetype || "";
+    const hasMedia: boolean = payload.hasMedia || false;
+    const mediaUrl: string = payload.mediaUrl || payload.media?.url || "";
+    const mimetype: string = payload._data?.mimetype || payload.media?.mimetype || payload._data?.message?.audioMessage?.mimetype || payload._data?.message?.imageMessage?.mimetype || "";
     const isImage = hasMedia && mimetype.startsWith("image/");
-    const isAudio = hasMedia && (mimetype.startsWith("audio/") || mimetype === "audio/ogg; codecs=opus");
+    const isAudio = hasMedia && (mimetype.startsWith("audio/") || mimetype.includes("ogg") || mimetype.includes("opus"));
+
+    console.log(`[MEDIA DEBUG] hasMedia: ${hasMedia}, mediaUrl: ${mediaUrl}, mimetype: ${mimetype}, isImage: ${isImage}, isAudio: ${isAudio}`);
 
     if (!userMessage.trim() && !isImage && !isAudio) return;
 
@@ -219,13 +225,25 @@ app.post("/webhook", async (req: Request, res: Response) => {
     // Prepend reply context to message
     const messageWithContext = replyContext ? `${replyContext}${cleanMessage}` : cleanMessage;
 
+    // Resolve media URL — use from payload or download via WAHA API
+    let resolvedMediaUrl = mediaUrl;
+    if (hasMedia && !resolvedMediaUrl) {
+      try {
+        const msgId: string = payload.id || "";
+        console.log(`[${chatId}] Media URL missing, downloading via WAHA API (msgId: ${msgId})`);
+        resolvedMediaUrl = await getMediaUrl(msgId);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${chatId}] Failed to get media URL:`, msg);
+      }
+    }
+
     // Build user message content (text, image, audio)
     if (isAudio) {
       try {
-        const mediaUrl: string = payload.mediaUrl;
-        console.log(`[${chatId}] Audio/VN: ${mediaUrl}`);
+        console.log(`[${chatId}] Audio/VN: ${resolvedMediaUrl}`);
 
-        const transcript = await transcribeAudio(mediaUrl);
+        const transcript = await transcribeAudio(resolvedMediaUrl);
         console.log(`[${chatId}] Transcript: ${transcript}`);
 
         const vnMessage = replyContext
@@ -239,12 +257,11 @@ app.post("/webhook", async (req: Request, res: Response) => {
       }
     } else if (isImage) {
       try {
-        const mediaUrl: string = payload.mediaUrl;
-        console.log(`[${chatId}] Image: ${mediaUrl}`);
+        console.log(`[${chatId}] Image: ${resolvedMediaUrl}`);
 
         const content: Array<Record<string, unknown>> = [];
         content.push({ type: "text", text: messageWithContext || "Jelaskan gambar ini." });
-        content.push({ type: "image_url", image_url: { url: mediaUrl } });
+        content.push({ type: "image_url", image_url: { url: resolvedMediaUrl } });
         history.push({ role: "user", content });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

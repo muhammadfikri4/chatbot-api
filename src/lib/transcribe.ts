@@ -4,10 +4,16 @@
  */
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const WAHA_API_KEY = process.env.WAHA_API_KEY || "";
 
 export async function transcribeAudio(audioUrl: string): Promise<string> {
-  // Download audio file
-  const audioRes = await fetch(audioUrl);
+  // Download audio file (with WAHA auth if needed)
+  const headers: Record<string, string> = {};
+  if (WAHA_API_KEY && audioUrl.includes("/api/")) {
+    headers["X-Api-Key"] = WAHA_API_KEY;
+  }
+
+  const audioRes = await fetch(audioUrl, { headers });
   if (!audioRes.ok) {
     throw new Error(`Failed to download audio: ${audioRes.status}`);
   }

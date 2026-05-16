@@ -50,6 +50,29 @@ export async function stopTyping(chatId: string): Promise<void> {
   }).catch(() => {});
 }
 
+export async function getMediaUrl(messageId: string): Promise<string> {
+  const h = headers();
+  delete h["Content-Type"];
+
+  const res = await fetch(
+    `${WAHA_API_URL}/api/${WAHA_SESSION}/messages/${messageId}/download`,
+    { method: "GET", headers: h }
+  );
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`WAHA getMediaUrl error ${res.status}: ${errBody}`);
+  }
+
+  const data = await res.json() as { mimetype?: string; url?: string; data?: string };
+
+  // Return URL if available, otherwise construct data URL from base64
+  if (data.url) return data.url;
+  if (data.data && data.mimetype) return `data:${data.mimetype};base64,${data.data}`;
+
+  throw new Error("No media URL or data in response");
+}
+
 export async function downloadMedia(messageId: string): Promise<unknown> {
   const res = await fetch(
     `${WAHA_API_URL}/api/${WAHA_SESSION}/messages/${messageId}/download`,
