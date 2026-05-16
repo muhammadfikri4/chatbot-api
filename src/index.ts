@@ -4,6 +4,7 @@ import path from "path";
 import express, { Request, Response } from "express";
 import { chat } from "./lib/openrouter";
 import { sendText, startTyping, stopTyping } from "./lib/waha";
+import { searchWeb, fetchPageContent } from "./lib/search";
 
 const app = express();
 app.use(express.json());
@@ -50,6 +51,8 @@ function buildSystemPrompt(): string {
 - Jangan mulai jawaban dengan "Oke", "Baik", "Tentu" atau kata formal lainnya.
 - Jawab dalam bahasa yang sama dengan pengguna.`
   }
+
+FITUR SEARCH: Jika user bertanya sesuatu yang butuh informasi terbaru/real-time (berita, harga, event, cuaca, jadwal, dll) dan kamu tidak punya infonya, JANGAN jawab "saya tidak tahu". Sebaliknya, jawab HANYA dengan format: [SEARCH: kata kunci pencarian]. Contoh: user tanya "harga iPhone 16 sekarang" → jawab "[SEARCH: harga iPhone 16 terbaru 2026]". Jangan tambahkan teks lain selain format tersebut. Untuk pertanyaan yang bisa kamu jawab sendiri (pengetahuan umum, knowledge base, matematika, dll), jawab langsung tanpa search.
 
 Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
 
@@ -237,7 +240,41 @@ app.post("/webhook", async (req: Request, res: Response) => {
     await startTyping(chatId);
 
     // Call OpenRouter
-    const reply = await chat(dynamicPrompt, history as never);
+    let reply = await chat(dynamicPrompt, history as never);
+
+    // Handle search request from model
+    const searchMatch = reply.match(/\[SEARCH:\s*(.+?)\]/);
+    if (searchMatch) {
+      const query = searchMatch[1].trim();
+      console.log(`[${chatId}] Searching: ${query}`);
+
+      const results = await searchWeb(query);
+      if (results.length > 0) {
+        // Fetch page content from top results
+        const pages = await Promise.all(
+          results.map(async (r) => {
+            const content = await fetchPageContent(r.url);
+            return `Sumber: ${r.title} (${r.url})\n${r.snippet}\n${content}`;
+          })
+        );
+
+        const searchContext = pages.join("\n\n---\n\n");
+
+        // Send search results back to model
+        history.push({ role: "assistant", content: reply });
+        history.push({
+          role: "user",
+          content: `Berikut hasil pencarian untuk "${query}":\n\n${searchContext}\n\nJawab pertanyaan user berdasarkan hasil pencarian di atas. Jawab singkat dan natural.`,
+        });
+
+        reply = await chat(dynamicPrompt, history as never);
+        // Remove the search context from history to save tokens
+        history.pop();
+        history.pop();
+      } else {
+        reply = "Wah, gak nemu hasil pencarian nih. Coba tanya dengan kata kunci lain ya.";
+      }
+    }
 
     await stopTyping(chatId);
 
