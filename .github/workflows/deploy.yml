@@ -75,13 +75,16 @@ jobs:
           SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
           SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CHROMA_URL: ${{ secrets.CHROMA_URL }}
+          CHROMA_USERNAME: ${{ secrets.CHROMA_USERNAME }}
+          CHROMA_PASSWORD: ${{ secrets.CHROMA_PASSWORD }}
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,SERP_API_KEY,GROQ_API_KEY
+          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,SERP_API_KEY,GROQ_API_KEY,CHROMA_URL,CHROMA_USERNAME,CHROMA_PASSWORD
           script: |
             APP_DIR="$HOME/app/waha-chatbot"
 
@@ -121,6 +124,7 @@ jobs:
             GROQ_API_KEY=${GROQ_API_KEY}
             EOL
 
+
             # Build & run with Docker
             docker build -t waha-chatbot:latest .
             docker stop $CONTAINER_NAME 2>/dev/null || true
@@ -129,7 +133,11 @@ jobs:
               --name $CONTAINER_NAME \
               --restart unless-stopped \
               --env-file .env \
+              -e CHROMA_URL=${CHROMA_URL} \
+              -e CHROMA_USERNAME=${CHROMA_USERNAME} \
+              -e CHROMA_PASSWORD=${CHROMA_PASSWORD} \
               -v $(pwd)/knowledge:/app/knowledge \
+              --add-host=host.docker.internal:host-gateway \
               -p ${APP_PORT:-3001}:${APP_PORT:-3001} \
               waha-chatbot:latest
 

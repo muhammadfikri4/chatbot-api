@@ -7,6 +7,7 @@ import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl } f
 import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
+import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector } from "./lib/memory";
 
 const app = express();
 app.use(express.json());
@@ -45,14 +46,15 @@ console.log(`Loaded knowledge: ${currentKnowledge.length} characters`);
 function buildSystemPrompt(): string {
   return `${
     process.env.SYSTEM_PROMPT ||
-    `Kamu adalah teman ngobrol di WhatsApp. Aturan penting:
-- Jawab SINGKAT, maksimal 1-3 kalimat kayak chat biasa. Jangan panjang lebar.
-- JANGAN pernah copy-paste dari knowledge base. Selalu paraphrase pakai kata-kata sendiri.
-- Pakai bahasa gaul, santai, kayak ngobrol sama temen. Boleh bercanda dan roasting ringan.
-- Jangan pakai bullet point atau format panjang kecuali diminta.
-- Jangan mulai jawaban dengan "Oke", "Baik", "Tentu" atau kata formal lainnya.
-- Jawab dalam bahasa yang sama dengan pengguna.
-- DILARANG KERAS mencampur atau menyelipkan bahasa China/Mandarin/中文 dalam jawaban, KECUALI pengguna memang menggunakan bahasa tersebut.`
+    `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
+- Singkat, 1-3 kalimat. Kayak chat biasa, bukan essay.
+- Santai dan gaul, boleh bercanda, roasting ringan, pake slang. Tapi jangan lebay.
+- Variasikan gaya jawaban. Kadang serius, kadang becanda, kadang singkat banget. Jangan monoton.
+- JANGAN selalu pake pembuka yang sama. Beda-bedain tiap jawaban.
+- MURNI bahasa Indonesia. DILARANG campur bahasa asing (China/中文, Rusia, Arab, Jepang, Korea). English umum boleh (OK, thanks, dll).
+- Jangan pake bullet point kecuali diminta.
+- Kalau kamu tau jawabannya, jawab natural seolah emang udah tau. Jangan bilang "aku ingat", "dari catatan", atau semacamnya.
+- JANGAN copy-paste. Selalu paraphrase pakai kata-kata sendiri.`
   }
 
 FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris pertama, sebelum isi jawaban:
@@ -91,6 +93,7 @@ async function handleKnowledgeCommand(
     entries.push(arg);
     saveKnowledgeEntries(entries);
     reloadKnowledge();
+    saveKnowledgeToVector(arg).catch(() => {});
     await sendText(chatId, `✅ Knowledge ditambahkan:\n"${arg}"\n\nTotal: ${entries.length} entries`);
     return true;
   }
@@ -197,9 +200,9 @@ app.post("/webhook", async (req: Request, res: Response) => {
 
     // Identify sender (owner detection)
     const senderRaw: string = payload.participant || payload.from || "";
-    const ownerId = process.env.OWNER_MENTION_ID || "";
-    console.log(`[SENDER DEBUG] senderRaw: ${senderRaw}, ownerId: ${ownerId}`);
-    const isOwner = ownerId !== "" && senderRaw.includes(ownerId);
+    const ownerIds = (process.env.OWNER_MENTION_ID || "").split(",").map((s) => s.trim()).filter(Boolean);
+    console.log(`[SENDER DEBUG] senderRaw: ${senderRaw}, ownerIds: ${ownerIds}`);
+    const isOwner = ownerIds.some((id) => senderRaw.includes(id));
     const senderLabel = isOwner ? "Fikri (Muhammad Fikrianto Aji, pembuat bot)" : "";
 
     // Clean mention tags from message
@@ -283,16 +286,42 @@ app.post("/webhook", async (req: Request, res: Response) => {
       history.shift();
     }
 
+    // Query relevant memory from ChromaDB
+    let memoryContext = "";
+    try {
+      const memories = await queryMemory(cleanMessage, 5);
+      if (memories.length > 0) {
+        // Filter memories — only include if sender matches or it's general knowledge
+        const senderForMemory = isOwner ? "Fikri" : (payload._data?.pushName || senderRaw);
+        const filteredMemories = memories.filter((m) => {
+          // Include if it's from the same sender or from bot/system
+          const isOwnMemory = m.includes(`Q (${senderForMemory})`) || m.includes("Q (bot)") || m.includes("Q (system)");
+          const isKnowledge = m.includes("type: knowledge");
+          return isOwnMemory || isKnowledge;
+        });
+
+        if (filteredMemories.length > 0) {
+          memoryContext = `\n\n=== CONTEXT ===
+Info yang kamu tau. Jawab natural, JANGAN bilang "aku ingat/dari catatan". JANGAN copy-paste. Paraphrase.
+${filteredMemories.join("\n\n")}
+=== END CONTEXT ===`;
+        }
+      }
+    } catch {
+      // Memory query failed, continue without it
+    }
+
     // Build dynamic system prompt
-    let dynamicPrompt = systemPrompt;
-    if (isGroup && ownerId) {
+    let dynamicPrompt = systemPrompt + memoryContext;
+    const ownerMentionId = ownerIds[ownerIds.length - 1] || "";
+    if (isGroup && ownerMentionId) {
       dynamicPrompt += `\n\nINFO GRUP:
-- Kalau mau refer ke Fikri di grup, tulis @${ownerId} supaya ke-tag. Jangan pakai link wa.me.
-- Contoh: "tanya aja ke @${ownerId}" bukan "hubungi https://wa.me/..."`;
+- Kalau mau refer ke Fikri di grup, tulis @${ownerMentionId} supaya ke-tag. Jangan pakai link wa.me.
+- Contoh: "tanya aja ke @${ownerMentionId}" bukan "hubungi https://wa.me/..."`;
     }
-    if (senderLabel) {
-      dynamicPrompt += `\n\nPengirim pesan ini adalah: ${senderLabel}. Sapa dia sesuai konteks.`;
-    }
+    const currentSender = isOwner ? "Fikri (Muhammad Fikrianto Aji, pembuat bot)" : (payload._data?.pushName || senderRaw);
+    dynamicPrompt += `\n\nPengirim pesan ini: ${currentSender}${isOwner ? ". Dia owner bot." : ""}`;
+
 
     // Mark message as read + show typing indicator
     await sendSeen(chatId);
@@ -343,10 +372,14 @@ app.post("/webhook", async (req: Request, res: Response) => {
     history.push({ role: "assistant", content: reply });
     console.log(`[${chatId}] Bot: ${reply}${wantVoice ? " [VOICE]" : ""}`);
 
+    // Save Q&A pair to vector memory
+    const senderName = payload._data?.pushName || senderRaw;
+    saveQA(chatId, cleanMessage, reply, senderName).catch(() => {});
+
     // Check if reply mentions owner
     const mentions: string[] = [];
-    if (ownerId && reply.includes(`@${ownerId}`)) {
-      mentions.push(`${ownerId}@lid`);
+    if (ownerMentionId && reply.includes(`@${ownerMentionId}`)) {
+      mentions.push(`${ownerMentionId}@lid`);
     }
 
     await stopTyping(chatId);

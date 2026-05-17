@@ -46,8 +46,13 @@ async function tryModel(
 
   if (res.ok) {
     const data: OpenRouterResponse = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) {
+      console.error(`[OpenRouter] ${model} returned empty response`);
+      return null;
+    }
     console.log(`[OpenRouter] Success with model: ${model}`);
-    return data.choices[0].message.content;
+    return content;
   }
 
   // Rate limited — wait once then retry
