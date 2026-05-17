@@ -8,7 +8,7 @@ import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
 import { notifyError } from "./lib/discord";
-import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector } from "./lib/memory";
+import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector, setBaseKnowledge } from "./lib/memory";
 
 const app = express();
 app.use(express.json());
@@ -43,6 +43,7 @@ function saveKnowledgeEntries(entries: string[]): void {
 
 let currentKnowledge = loadKnowledge();
 console.log(`Loaded knowledge: ${currentKnowledge.length} characters`);
+setBaseKnowledge(currentKnowledge);
 
 function buildSystemPrompt(): string {
   return `${
@@ -63,7 +64,7 @@ FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris 
 - [VOICE] — HANYA jika user secara eksplisit minta dibalas pakai suara/voice/vn/audio
 Contoh: user bilang "jawab pake vn dong" → baris pertama: [VOICE], lalu jawaban. User bilang "halo" → baris pertama: [TEXT], lalu jawaban.
 
-FITUR SEARCH: Jika user bertanya sesuatu yang butuh informasi terbaru/real-time (berita, harga, event, cuaca, jadwal, dll) dan kamu tidak punya infonya, JANGAN jawab "saya tidak tahu". Sebaliknya, jawab HANYA dengan format: [SEARCH: kata kunci pencarian]. Contoh: user tanya "harga iPhone 16 sekarang" → jawab "[SEARCH: harga iPhone 16 terbaru 2026]". Jangan tambahkan teks lain selain format tersebut. Untuk pertanyaan yang bisa kamu jawab sendiri (pengetahuan umum, knowledge base, matematika, dll), jawab langsung tanpa search.
+FITUR SEARCH: Kamu PUNYA akses internet. Kalau kamu butuh info yang tidak kamu tau atau user minta cari sesuatu, jawab HANYA dengan format [SEARCH: kata kunci]. Jangan tambah teks lain. Jangan pernah bilang "ga bisa akses internet". Kalau bisa jawab sendiri (knowledge base, pengetahuan umum, matematika), jawab langsung tanpa search.
 
 Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
 

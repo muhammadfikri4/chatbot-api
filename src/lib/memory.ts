@@ -81,6 +81,66 @@ async function init(): Promise<void> {
 /**
  * Save a Q&A pair to ChromaDB — only if question is not similar to existing ones
  */
+// Base knowledge — extract meaningful phrases from knowledge/base.md
+let baseKnowledgePhrases: string[] = [];
+
+export function setBaseKnowledge(content: string): void {
+  // Extract meaningful phrases (2+ words) from base knowledge
+  const lower = content.toLowerCase();
+
+  // Extract lines that contain actual content (not headers/formatting)
+  const lines = lower
+    .split("\n")
+    .map((l) => l.replace(/^[#\-*>\s]+/, "").trim())
+    .filter((l) => l.length > 3 && !l.startsWith("http"));
+
+  // Extract multi-word phrases and significant single words
+  const phrases = new Set<string>();
+
+  for (const line of lines) {
+    // Add full line as phrase if short enough
+    if (line.length > 5 && line.length < 80) {
+      phrases.add(line);
+    }
+
+    // Extract names and key terms (capitalized words, quoted terms)
+    const nameMatches = content.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/g) || [];
+    for (const name of nameMatches) {
+      phrases.add(name.toLowerCase());
+    }
+
+    // Extract parenthesized terms like (panggilan: Ucup)
+    const parenMatches = content.match(/\(([^)]+)\)/g) || [];
+    for (const p of parenMatches) {
+      const inner = p.slice(1, -1).toLowerCase();
+      inner.split(/[,/]/).forEach((part) => {
+        const clean = part.replace(/panggilan:|julukan:/gi, "").trim();
+        if (clean.length > 2) phrases.add(clean);
+      });
+    }
+  }
+
+  baseKnowledgePhrases = [...phrases];
+  console.log(`[Memory] Base knowledge phrases: ${baseKnowledgePhrases.length}`);
+}
+
+function overlapsBaseKnowledge(question: string, answer: string): boolean {
+  if (baseKnowledgePhrases.length === 0) return false;
+
+  const combined = (question + " " + answer).toLowerCase();
+
+  // Count how many base knowledge phrases match
+  let matchCount = 0;
+  for (const phrase of baseKnowledgePhrases) {
+    if (combined.includes(phrase)) {
+      matchCount++;
+    }
+  }
+
+  // If 2+ phrases match, it's overlapping with base knowledge
+  return matchCount >= 2;
+}
+
 export async function saveQA(
   chatId: string,
   question: string,
@@ -89,6 +149,12 @@ export async function saveQA(
 ): Promise<void> {
   try {
     if (!question || question.length < 5) return;
+
+    // Skip if overlaps with base knowledge
+    if (overlapsBaseKnowledge(question, answer)) {
+      console.log(`[Memory] Skip Q&A (overlaps base knowledge): "${question.slice(0, 40)}..."`);
+      return;
+    }
 
     await init();
 
