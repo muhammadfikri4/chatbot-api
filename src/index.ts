@@ -351,13 +351,19 @@ ${memories.join("\n\n")}
         history.push({ role: "assistant", content: reply });
         history.push({
           role: "user",
-          content: `Berikut hasil pencarian untuk "${query}":\n\n${searchContext}\n\nJawab pertanyaan user berdasarkan hasil pencarian di atas. Jawab singkat dan natural.`,
+          content: `Berikut hasil pencarian untuk "${query}":\n\n${searchContext}\n\nJawab pertanyaan user berdasarkan hasil pencarian di atas. Jawab singkat dan natural. JANGAN output [SEARCH:] lagi. Langsung jawab.`,
         });
 
         reply = await chat(dynamicPrompt, history as never);
         // Remove the search context from history to save tokens
         history.pop();
         history.pop();
+
+        // Safety: strip any leftover [SEARCH:] tags
+        if (reply.includes("[SEARCH:")) {
+          reply = reply.replace(/\[SEARCH:[^\]]*\]/g, "").trim();
+          if (!reply) reply = "Aku udah cari tapi belum nemu info yang pas. Coba tanya dengan cara lain ya.";
+        }
       } else {
         reply = "Wah, gak nemu hasil pencarian nih. Coba tanya dengan kata kunci lain ya.";
       }
