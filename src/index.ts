@@ -323,6 +323,24 @@ ${memories.join("\n\n")}
     await sendSeen(chatId);
     await startTyping(chatId);
 
+    // If message contains a URL, scrape it and add as context
+    const urlMatch = cleanMessage.match(/https?:\/\/[^\s]+/);
+    if (urlMatch) {
+      try {
+        const url = urlMatch[0];
+        console.log(`[${chatId}] Scraping URL: ${url}`);
+        const pageContent = await fetchPageContent(url);
+        if (pageContent) {
+          const lastEntry = history[history.length - 1];
+          if (typeof lastEntry?.content === "string") {
+            lastEntry.content = `${lastEntry.content}\n\n[Isi halaman ${url}]:\n${pageContent}`;
+          }
+        }
+      } catch {
+        // URL scrape failed, continue without it
+      }
+    }
+
     // Call OpenRouter
     let reply = await chat(dynamicPrompt, history as never);
 
