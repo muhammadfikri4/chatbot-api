@@ -293,8 +293,11 @@ app.post("/webhook", async (req: Request, res: Response) => {
       if (memories.length > 0) {
         const currentSenderName = isOwner ? "Fikri" : (payload._data?.pushName || senderRaw);
         memoryContext = `\n\n=== CONTEXT ===
-Info yang kamu tau. Jawab natural, JANGAN bilang "aku ingat/dari catatan". JANGAN copy-paste. Paraphrase.
-Pengirim saat ini: ${currentSenderName}. PRIORITASKAN info dari pengirim ini, tapi info dari orang lain boleh dipakai kalau relevan.
+Info yang kamu tau. Aturan:
+- Jawab natural, JANGAN bilang "aku ingat/dari catatan". JANGAN copy-paste. Paraphrase.
+- Pengirim saat ini: ${currentSenderName}. Prioritaskan info dari dia.
+- Info dari orang lain boleh dipakai kalau relevan.
+- Kalau ada info yang BERTENTANGAN, pakai yang TERBARU (lihat timestamp).
 ${memories.join("\n\n")}
 === END CONTEXT ===`;
       }

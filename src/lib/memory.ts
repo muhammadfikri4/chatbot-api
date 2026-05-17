@@ -158,14 +158,20 @@ export async function queryMemory(
 
     if (!results.documents?.[0]) return [];
 
-    return results.documents[0]
-      .filter((doc): doc is string => doc !== null)
+    // Build entries with timestamp, sort newest first
+    const entries = results.documents[0]
       .map((doc, i) => {
+        if (!doc) return null;
         const meta = results.metadatas?.[0]?.[i];
         const answer = meta?.answer || "";
         const sender = meta?.sender || "unknown";
-        return `Q (${sender}): ${doc}\nA: ${answer}`;
-      });
+        const timestamp = String(meta?.timestamp || "");
+        return { doc, answer, sender, timestamp };
+      })
+      .filter((e): e is NonNullable<typeof e> => e !== null)
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+    return entries.map((e) => `Q (${e.sender}, ${e.timestamp}): ${e.doc}\nA: ${e.answer}`);
   } catch (err) {
     console.error("[Memory] Failed to query:", err);
     return [];
