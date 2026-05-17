@@ -7,6 +7,7 @@ import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl } f
 import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
+import { notifyError } from "./lib/discord";
 import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector } from "./lib/memory";
 
 const app = express();
@@ -394,6 +395,7 @@ ${memories.join("\n\n")}
     if (chatId) await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
     console.error("Error handling webhook:", msg);
+    notifyError(`Webhook (${chatId || "unknown"})`, msg).catch(() => {});
   }
 });
 
