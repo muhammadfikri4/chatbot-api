@@ -2,12 +2,12 @@ import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import express, { Request, Response } from "express";
-import { chat } from "./lib/openrouter";
-import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl } from "./lib/waha";
+import { chat, lastUsedModel } from "./lib/openrouter";
+import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl, getGroupInfo } from "./lib/waha";
 import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
-import { notifyError } from "./lib/discord";
+import { notifyError, notifyChat } from "./lib/discord";
 import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector, setBaseKnowledge } from "./lib/memory";
 
 const app = express();
@@ -327,9 +327,11 @@ ${memories.join("\n\n")}
     let reply = await chat(dynamicPrompt, history as never);
 
     // Handle search request from model
+    let searchQuery = "";
     const searchMatch = reply.match(/\[SEARCH:\s*(.+?)\]/);
     if (searchMatch) {
-      const query = searchMatch[1].trim();
+      searchQuery = searchMatch[1].trim();
+      const query = searchQuery;
       console.log(`[${chatId}] Searching: ${query}`);
 
       const results = await searchWeb(query);
@@ -392,6 +394,29 @@ ${memories.join("\n\n")}
     }
 
     await stopTyping(chatId);
+
+    // Log to Discord
+    let groupName = "";
+    if (isGroup) {
+      const info = await getGroupInfo(chatId).catch(() => null);
+      groupName = info?.subject || chatId;
+    }
+
+    notifyChat({
+      sender: payload._data?.pushName || senderRaw,
+      senderId: senderRaw,
+      chatId,
+      groupName,
+      message: cleanMessage,
+      reply,
+      model: lastUsedModel,
+      isGroup,
+      isOwner,
+      isVoice: wantVoice,
+      isImage,
+      isAudio,
+      searchQuery: searchQuery || undefined,
+    }).catch(() => {});
   } catch (err: unknown) {
     if (chatId) await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);

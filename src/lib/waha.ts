@@ -81,6 +81,20 @@ export async function sendVoice(chatId: string, base64Audio: string): Promise<un
   return res.json();
 }
 
+export async function getGroupInfo(groupId: string): Promise<{ subject: string } | null> {
+  try {
+    const h = headers();
+    const res = await fetch(`${WAHA_API_URL}/api/${WAHA_SESSION}/groups/${groupId}`, {
+      method: "GET",
+      headers: h,
+    });
+    if (!res.ok) return null;
+    return await res.json() as { subject: string };
+  } catch {
+    return null;
+  }
+}
+
 export async function getMediaUrl(messageId: string): Promise<string> {
   const h = headers();
   delete h["Content-Type"];

@@ -4,6 +4,8 @@ const MODELS = (process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini")
   .map((m) => m.trim())
   .filter(Boolean);
 
+export let lastUsedModel = "";
+
 interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string | ContentPart[];
@@ -52,6 +54,7 @@ async function tryModel(
       return null;
     }
     console.log(`[OpenRouter] Success with model: ${model}`);
+    lastUsedModel = model;
     return content;
   }
 
