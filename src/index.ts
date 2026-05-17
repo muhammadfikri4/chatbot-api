@@ -291,21 +291,12 @@ app.post("/webhook", async (req: Request, res: Response) => {
     try {
       const memories = await queryMemory(cleanMessage, 5);
       if (memories.length > 0) {
-        // Filter memories — only include if sender matches or it's general knowledge
-        const senderForMemory = isOwner ? "Fikri" : (payload._data?.pushName || senderRaw);
-        const filteredMemories = memories.filter((m) => {
-          // Include if it's from the same sender or from bot/system
-          const isOwnMemory = m.includes(`Q (${senderForMemory})`) || m.includes("Q (bot)") || m.includes("Q (system)");
-          const isKnowledge = m.includes("type: knowledge");
-          return isOwnMemory || isKnowledge;
-        });
-
-        if (filteredMemories.length > 0) {
-          memoryContext = `\n\n=== CONTEXT ===
+        const currentSenderName = isOwner ? "Fikri" : (payload._data?.pushName || senderRaw);
+        memoryContext = `\n\n=== CONTEXT ===
 Info yang kamu tau. Jawab natural, JANGAN bilang "aku ingat/dari catatan". JANGAN copy-paste. Paraphrase.
-${filteredMemories.join("\n\n")}
+Pengirim saat ini: ${currentSenderName}. PRIORITASKAN info dari pengirim ini, tapi info dari orang lain boleh dipakai kalau relevan.
+${memories.join("\n\n")}
 === END CONTEXT ===`;
-        }
       }
     } catch {
       // Memory query failed, continue without it
