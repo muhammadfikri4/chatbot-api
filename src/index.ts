@@ -377,8 +377,6 @@ ${memories.join("\n\n")}
       mentions.push(`${ownerMentionId}@lid`);
     }
 
-    await stopTyping(chatId);
-
     if (wantVoice) {
       try {
         const audioBase64 = await textToSpeech(reply);
@@ -391,6 +389,8 @@ ${memories.join("\n\n")}
     } else {
       await sendText(chatId, reply, mentions);
     }
+
+    await stopTyping(chatId);
   } catch (err: unknown) {
     if (chatId) await stopTyping(chatId).catch(() => {});
     const msg = err instanceof Error ? err.message : String(err);
