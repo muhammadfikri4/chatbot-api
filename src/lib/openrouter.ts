@@ -3,6 +3,8 @@ const MODELS = (process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini")
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
+const MAX_ATTEMPTS = 2;
+const TIMEOUT_MS = 30000;
 
 export let lastUsedModel = "";
 
@@ -25,6 +27,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchWithTimeout(body: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body,
+      signal: controller.signal,
+    });
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function tryModel(
   model: string,
   messages: ChatMessage[],
@@ -37,57 +59,42 @@ async function tryModel(
     messages: [{ role: "system", content: systemPrompt }, ...messages],
   });
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body,
-  });
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetchWithTimeout(body);
 
-  if (res.ok) {
-    const data: OpenRouterResponse = await res.json();
-    const content = data?.choices?.[0]?.message?.content;
-    if (!content) {
-      console.error(`[OpenRouter] ${model} returned empty response`);
+      if (res.ok) {
+        const data: OpenRouterResponse = await res.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (!content) {
+          console.error(`[OpenRouter] ${model} returned empty response`);
+          return null;
+        }
+        console.log(`[OpenRouter] Success with model: ${model}${attempt > 0 ? " (retry)" : ""}`);
+        lastUsedModel = model;
+        return content;
+      }
+
+      if (res.status === 429 && attempt < MAX_ATTEMPTS - 1) {
+        const text = await res.text();
+        const retryMatch = text.match(/"retry_after_seconds":(\d+)/);
+        const waitSec = retryMatch ? parseInt(retryMatch[1]) : 10;
+        console.log(`[OpenRouter] ${model} rate limited, retrying in ${waitSec}s`);
+        await sleep(waitSec * 1000);
+        continue;
+      }
+
+      const text = await res.text();
+      console.error(`[OpenRouter] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
+      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.name : String(err);
+      console.error(`[OpenRouter] ${model} error: ${msg}${attempt < MAX_ATTEMPTS - 1 ? ", retrying" : ""}`);
+      if (attempt < MAX_ATTEMPTS - 1) continue;
       return null;
     }
-    console.log(`[OpenRouter] Success with model: ${model}`);
-    lastUsedModel = model;
-    return content;
   }
 
-  // Rate limited — wait once then retry
-  if (res.status === 429) {
-    const text = await res.text();
-    const retryMatch = text.match(/"retry_after_seconds":(\d+)/);
-    const waitSec = retryMatch ? parseInt(retryMatch[1]) : 10;
-    console.log(`[OpenRouter] ${model} rate limited, retrying in ${waitSec}s`);
-    await sleep(waitSec * 1000);
-
-    const res2 = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body,
-    });
-
-    if (res2.ok) {
-      const data: OpenRouterResponse = await res2.json();
-      console.log(`[OpenRouter] Success with model: ${model} (retry)`);
-      return data.choices[0].message.content;
-    }
-
-    console.log(`[OpenRouter] ${model} still failed after retry, switching model`);
-    return null;
-  }
-
-  // Other error
-  const text = await res.text();
-  console.error(`[OpenRouter] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
   return null;
 }
 
