@@ -28,9 +28,10 @@ function loadKnowledge(): string {
     .join("\n\n---\n\n");
 }
 
-// Load base knowledge for overlap detection
-const baseKnowledgeContent = loadKnowledge();
-setBaseKnowledge(baseKnowledgeContent);
+// Load base knowledge for overlap detection + system prompt
+let currentKnowledge = loadKnowledge();
+console.log(`Loaded knowledge: ${currentKnowledge.length} characters`);
+setBaseKnowledge(currentKnowledge);
 
 // Train knowledge files into Qdrant on startup
 trainKnowledge(KNOWLEDGE_DIR).then((count) => {
@@ -39,9 +40,10 @@ trainKnowledge(KNOWLEDGE_DIR).then((count) => {
   console.error("[Startup] Failed to train knowledge:", err);
 });
 
-const systemPrompt = `${
-  process.env.SYSTEM_PROMPT ||
-  `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
+function buildSystemPrompt(): string {
+  return `${
+    process.env.SYSTEM_PROMPT ||
+    `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
 - Singkat, 1-3 kalimat. Kayak chat biasa, bukan essay.
 - Santai dan gaul, boleh bercanda, roasting ringan, pake slang. Tapi jangan lebay.
 - Variasikan gaya jawaban. Kadang serius, kadang becanda, kadang singkat banget. Jangan monoton.
@@ -50,7 +52,7 @@ const systemPrompt = `${
 - Jangan pake bullet point kecuali diminta.
 - Kalau kamu tau jawabannya, jawab natural seolah emang udah tau. Jangan bilang "aku ingat", "dari catatan", atau semacamnya.
 - JANGAN copy-paste. Selalu paraphrase pakai kata-kata sendiri.`
-}
+  }
 
 FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris pertama, sebelum isi jawaban:
 - [TEXT] — jika user tidak minta dibalas pakai suara (DEFAULT, gunakan ini kalau ragu)
@@ -59,7 +61,21 @@ Contoh: user bilang "jawab pake vn dong" → baris pertama: [VOICE], lalu jawaba
 
 FITUR SEARCH: Kamu PUNYA akses internet. Kalau kamu butuh info yang tidak kamu tau atau user minta cari sesuatu, jawab HANYA dengan format [SEARCH: kata kunci]. Jangan tambah teks lain. Jangan pernah bilang "ga bisa akses internet". Kalau bisa jawab sendiri (knowledge base, pengetahuan umum, matematika), jawab langsung tanpa search.
 
-Kamu punya knowledge base yang bisa dicari secara otomatis. Jika ada info relevan dari knowledge base, akan muncul di CONTEXT. PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum (matematika, sains, sejarah, dll), jawab dengan pengetahuanmu sendiri. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.`;
+Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
+
+=== KNOWLEDGE BASE ===
+${currentKnowledge}
+=== END KNOWLEDGE BASE ===`;
+}
+
+let systemPrompt = buildSystemPrompt();
+
+function reloadKnowledge(): void {
+  currentKnowledge = loadKnowledge();
+  setBaseKnowledge(currentKnowledge);
+  systemPrompt = buildSystemPrompt();
+  console.log(`Knowledge reloaded: ${currentKnowledge.length} characters`);
+}
 
 // --- Knowledge Commands (owner only) ---
 async function handleKnowledgeCommand(
@@ -113,8 +129,8 @@ async function handleKnowledgeCommand(
 
   if (action === "train") {
     await sendText(chatId, "⏳ Re-training knowledge dari file...");
+    reloadKnowledge();
     const count = await trainKnowledge(KNOWLEDGE_DIR);
-    setBaseKnowledge(loadKnowledge());
     await sendText(chatId, `✅ Training selesai! ${count} chunks di-index ke Qdrant.`);
     return true;
   }
@@ -129,6 +145,18 @@ async function handleKnowledgeCommand(
 // Health check
 app.get("/", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "waha-chatbot" });
+});
+
+// Knowledge training endpoint
+app.post("/api/knowledge/train", async (_req: Request, res: Response) => {
+  try {
+    reloadKnowledge();
+    const count = await trainKnowledge(KNOWLEDGE_DIR);
+    res.json({ status: "ok", chunks: count });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ status: "error", message: msg });
+  }
 });
 
 // WAHA webhook endpoint
