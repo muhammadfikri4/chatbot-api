@@ -77,16 +77,15 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           DISCORD_ERROR_WEBHOOK: ${{ secrets.DISCORD_ERROR_WEBHOOK }}
           DISCORD_LOG_WEBHOOK: ${{ secrets.DISCORD_LOG_WEBHOOK }}
-          CHROMA_URL: ${{ secrets.CHROMA_URL }}
-          CHROMA_USERNAME: ${{ secrets.CHROMA_USERNAME }}
-          CHROMA_PASSWORD: ${{ secrets.CHROMA_PASSWORD }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: 22
-          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,SERP_API_KEY,GROQ_API_KEY,DISCORD_ERROR_WEBHOOK,DISCORD_LOG_WEBHOOK,CHROMA_URL,CHROMA_USERNAME,CHROMA_PASSWORD
+          envs: CONTAINER_NAME,WAHA_API_URL,WAHA_API_KEY,WAHA_SESSION,BOT_MENTIONS,OWNER_MENTION_ID,OPENROUTER_API_KEY,OPENROUTER_MODEL,MAX_TOKENS,TEMPERATURE,APP_PORT,SERVER_DOMAIN,SERP_API_KEY,GROQ_API_KEY,DISCORD_ERROR_WEBHOOK,DISCORD_LOG_WEBHOOK,QDRANT_URL,QDRANT_API_KEY
           script: |
             APP_DIR="$HOME/app/waha-chatbot"
 
@@ -137,9 +136,8 @@ jobs:
               --name $CONTAINER_NAME \
               --restart unless-stopped \
               --env-file .env \
-              -e CHROMA_URL=${CHROMA_URL} \
-              -e CHROMA_USERNAME=${CHROMA_USERNAME} \
-              -e CHROMA_PASSWORD=${CHROMA_PASSWORD} \
+              -e QDRANT_URL=${QDRANT_URL} \
+              -e QDRANT_API_KEY=${QDRANT_API_KEY} \
               -v $(pwd)/knowledge:/app/knowledge \
               --add-host=host.docker.internal:host-gateway \
               -p ${APP_PORT:-3001}:${APP_PORT:-3001} \

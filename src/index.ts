@@ -8,7 +8,7 @@ import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
 import { notifyError, notifyChat } from "./lib/discord";
-import { saveQA, queryMemory, saveKnowledge as saveKnowledgeToVector, setBaseKnowledge } from "./lib/memory";
+import { saveQA, queryMemory, setBaseKnowledge, trainKnowledge, addManualKnowledge, listManualKnowledge, deleteManualKnowledge, clearManualKnowledge } from "./lib/memory";
 
 const app = express();
 app.use(express.json());
@@ -19,7 +19,6 @@ const MAX_HISTORY = 20;
 
 // --- Knowledge Management ---
 const KNOWLEDGE_DIR = path.join(__dirname, "..", "knowledge");
-const KNOWLEDGE_FILE = path.join(KNOWLEDGE_DIR, "base.md");
 
 function loadKnowledge(): string {
   if (!fs.existsSync(KNOWLEDGE_DIR)) return "";
@@ -29,26 +28,20 @@ function loadKnowledge(): string {
     .join("\n\n---\n\n");
 }
 
-function getKnowledgeEntries(): string[] {
-  if (!fs.existsSync(KNOWLEDGE_FILE)) return [];
-  const content = fs.readFileSync(KNOWLEDGE_FILE, "utf-8").trim();
-  if (!content) return [];
-  return content.split("\n\n").filter((e) => e.trim());
-}
+// Load base knowledge for overlap detection
+const baseKnowledgeContent = loadKnowledge();
+setBaseKnowledge(baseKnowledgeContent);
 
-function saveKnowledgeEntries(entries: string[]): void {
-  if (!fs.existsSync(KNOWLEDGE_DIR)) fs.mkdirSync(KNOWLEDGE_DIR, { recursive: true });
-  fs.writeFileSync(KNOWLEDGE_FILE, entries.join("\n\n") + "\n");
-}
+// Train knowledge files into Qdrant on startup
+trainKnowledge(KNOWLEDGE_DIR).then((count) => {
+  console.log(`[Startup] Indexed ${count} knowledge chunks into Qdrant`);
+}).catch((err) => {
+  console.error("[Startup] Failed to train knowledge:", err);
+});
 
-let currentKnowledge = loadKnowledge();
-console.log(`Loaded knowledge: ${currentKnowledge.length} characters`);
-setBaseKnowledge(currentKnowledge);
-
-function buildSystemPrompt(): string {
-  return `${
-    process.env.SYSTEM_PROMPT ||
-    `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
+const systemPrompt = `${
+  process.env.SYSTEM_PROMPT ||
+  `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
 - Singkat, 1-3 kalimat. Kayak chat biasa, bukan essay.
 - Santai dan gaul, boleh bercanda, roasting ringan, pake slang. Tapi jangan lebay.
 - Variasikan gaya jawaban. Kadang serius, kadang becanda, kadang singkat banget. Jangan monoton.
@@ -57,7 +50,7 @@ function buildSystemPrompt(): string {
 - Jangan pake bullet point kecuali diminta.
 - Kalau kamu tau jawabannya, jawab natural seolah emang udah tau. Jangan bilang "aku ingat", "dari catatan", atau semacamnya.
 - JANGAN copy-paste. Selalu paraphrase pakai kata-kata sendiri.`
-  }
+}
 
 FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris pertama, sebelum isi jawaban:
 - [TEXT] — jika user tidak minta dibalas pakai suara (DEFAULT, gunakan ini kalau ragu)
@@ -66,20 +59,7 @@ Contoh: user bilang "jawab pake vn dong" → baris pertama: [VOICE], lalu jawaba
 
 FITUR SEARCH: Kamu PUNYA akses internet. Kalau kamu butuh info yang tidak kamu tau atau user minta cari sesuatu, jawab HANYA dengan format [SEARCH: kata kunci]. Jangan tambah teks lain. Jangan pernah bilang "ga bisa akses internet". Kalau bisa jawab sendiri (knowledge base, pengetahuan umum, matematika), jawab langsung tanpa search.
 
-Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
-
-=== KNOWLEDGE BASE ===
-${currentKnowledge}
-=== END KNOWLEDGE BASE ===`;
-}
-
-let systemPrompt = buildSystemPrompt();
-
-function reloadKnowledge(): void {
-  currentKnowledge = loadKnowledge();
-  systemPrompt = buildSystemPrompt();
-  console.log(`Knowledge reloaded: ${currentKnowledge.length} characters`);
-}
+Kamu punya knowledge base yang bisa dicari secara otomatis. Jika ada info relevan dari knowledge base, akan muncul di CONTEXT. PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum (matematika, sains, sejarah, dll), jawab dengan pengetahuanmu sendiri. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.`;
 
 // --- Knowledge Commands (owner only) ---
 async function handleKnowledgeCommand(
@@ -91,50 +71,57 @@ async function handleKnowledgeCommand(
   const arg = parts.slice(action?.length || 0).trim();
 
   if (action === "add" && arg) {
-    const entries = getKnowledgeEntries();
-    entries.push(arg);
-    saveKnowledgeEntries(entries);
-    reloadKnowledge();
-    saveKnowledgeToVector(arg).catch(() => {});
-    await sendText(chatId, `✅ Knowledge ditambahkan:\n"${arg}"\n\nTotal: ${entries.length} entries`);
+    await addManualKnowledge(arg);
+    const entries = await listManualKnowledge();
+    await sendText(chatId, `✅ Knowledge ditambahkan:\n"${arg}"\n\nTotal manual entries: ${entries.length}`);
     return true;
   }
 
   if (action === "list") {
-    const entries = getKnowledgeEntries();
+    const entries = await listManualKnowledge();
     if (entries.length === 0) {
-      await sendText(chatId, "📋 Knowledge kosong.");
+      await sendText(chatId, "📋 Manual knowledge kosong.\n\n(Knowledge dari file base.md tetap aktif di Qdrant)");
       return true;
     }
-    const list = entries.map((e, i) => `${i + 1}. ${e.slice(0, 100)}${e.length > 100 ? "..." : ""}`).join("\n");
-    await sendText(chatId, `📋 Knowledge (${entries.length} entries):\n\n${list}`);
+    const list = entries.map((e, i) => `${i + 1}. ${e.content.slice(0, 100)}${e.content.length > 100 ? "..." : ""}`).join("\n");
+    await sendText(chatId, `📋 Manual Knowledge (${entries.length} entries):\n\n${list}\n\n(Knowledge dari file base.md terpisah & tidak bisa dihapus)`);
     return true;
   }
 
   if (action === "delete" && arg) {
-    const entries = getKnowledgeEntries();
-    const idx = parseInt(arg) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= entries.length) {
+    const idx = parseInt(arg);
+    if (isNaN(idx)) {
+      await sendText(chatId, "❌ Masukkan nomor yang valid.");
+      return true;
+    }
+    const result = await deleteManualKnowledge(idx);
+    if (!result.success) {
+      const entries = await listManualKnowledge();
       await sendText(chatId, `❌ Nomor tidak valid. Range: 1-${entries.length}`);
       return true;
     }
-    const removed = entries.splice(idx, 1)[0];
-    saveKnowledgeEntries(entries);
-    reloadKnowledge();
-    await sendText(chatId, `🗑️ Dihapus:\n"${removed.slice(0, 100)}"\n\nSisa: ${entries.length} entries`);
+    const remaining = await listManualKnowledge();
+    await sendText(chatId, `🗑️ Dihapus:\n"${result.content?.slice(0, 100)}"\n\nSisa manual entries: ${remaining.length}`);
     return true;
   }
 
   if (action === "clear") {
-    saveKnowledgeEntries([]);
-    reloadKnowledge();
-    await sendText(chatId, "🗑️ Semua knowledge dihapus.");
+    await clearManualKnowledge();
+    await sendText(chatId, "🗑️ Semua manual knowledge dihapus.\n\n(Knowledge dari file base.md tetap aman)");
+    return true;
+  }
+
+  if (action === "train") {
+    await sendText(chatId, "⏳ Re-training knowledge dari file...");
+    const count = await trainKnowledge(KNOWLEDGE_DIR);
+    setBaseKnowledge(loadKnowledge());
+    await sendText(chatId, `✅ Training selesai! ${count} chunks di-index ke Qdrant.`);
     return true;
   }
 
   await sendText(
     chatId,
-    `📖 Knowledge Commands:\n\n!knowledge add <teks>\n!knowledge list\n!knowledge delete <nomor>\n!knowledge clear`
+    `📖 Knowledge Commands:\n\n!knowledge add <teks> — tambah manual knowledge\n!knowledge list — lihat manual knowledge\n!knowledge delete <nomor> — hapus manual knowledge\n!knowledge clear — hapus semua manual knowledge\n!knowledge train — re-index file knowledge ke Qdrant`
   );
   return true;
 }
@@ -288,7 +275,7 @@ app.post("/webhook", async (req: Request, res: Response) => {
       history.shift();
     }
 
-    // Query relevant memory from ChromaDB
+    // Query relevant context from Qdrant (knowledge + Q&A)
     let memoryContext = "";
     try {
       const memories = await queryMemory(cleanMessage, 5);

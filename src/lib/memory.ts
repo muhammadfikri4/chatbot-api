@@ -1,40 +1,44 @@
-import { ChromaClient, Collection, EmbeddingFunction } from "chromadb";
+import fs from "fs";
+import path from "path";
+import { QdrantClient } from "@qdrant/js-client-rest";
 
-const CHROMA_URL = process.env.CHROMA_URL || "http://localhost:8000";
-const CHROMA_USERNAME = process.env.CHROMA_USERNAME || "";
-const CHROMA_PASSWORD = process.env.CHROMA_PASSWORD || "";
+const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY || "";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 
-class OpenRouterEmbedding implements EmbeddingFunction {
-  async generate(texts: string[]): Promise<number[][]> {
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "openai/text-embedding-3-small",
-          input: texts,
-        }),
-      });
+const COLLECTION_NAME = "chat_memory";
+const VECTOR_SIZE = 1536; // text-embedding-3-small
 
-      if (res.ok) {
-        const data = (await res.json()) as {
-          data: Array<{ embedding: number[] }>;
-        };
-        return data.data.map((d) => d.embedding);
-      }
-    } catch {
-      // fallback below
+// --- Embedding ---
+
+async function embed(texts: string[]): Promise<number[][]> {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/text-embedding-3-small",
+        input: texts,
+      }),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as {
+        data: Array<{ embedding: number[] }>;
+      };
+      return data.data.map((d) => d.embedding);
     }
-
-    return texts.map((text) => hashEmbed(text));
+  } catch {
+    // fallback below
   }
+
+  return texts.map((text) => hashEmbed(text));
 }
 
-function hashEmbed(text: string, dims = 1536): number[] {
+function hashEmbed(text: string, dims = VECTOR_SIZE): number[] {
   const vec = new Array(dims).fill(0);
   for (let i = 0; i < text.length; i++) {
     const idx = i % dims;
@@ -44,72 +48,67 @@ function hashEmbed(text: string, dims = 1536): number[] {
   return vec.map((v) => v / magnitude);
 }
 
-let client: ChromaClient;
-let collection: Collection;
+// --- Qdrant Client ---
+
+let client: QdrantClient;
 let initialized = false;
-const embeddingFn = new OpenRouterEmbedding();
 
 async function init(): Promise<void> {
   if (initialized) return;
 
-  const clientOptions: Record<string, unknown> = {};
-
-  // Parse URL into host/port/ssl
-  const url = new URL(CHROMA_URL);
-  clientOptions.host = url.hostname;
-  clientOptions.port = parseInt(url.port || (url.protocol === "https:" ? "443" : "8000"));
-  clientOptions.ssl = url.protocol === "https:";
-
-  if (CHROMA_USERNAME && CHROMA_PASSWORD) {
-    clientOptions.headers = {
-      Authorization: "Basic " + Buffer.from(`${CHROMA_USERNAME}:${CHROMA_PASSWORD}`).toString("base64"),
-    };
-  }
-
-  client = new ChromaClient(clientOptions);
-
-  collection = await client.getOrCreateCollection({
-    name: "chat_memory",
-    metadata: { description: "WhatsApp chat history for RAG" },
-    embeddingFunction: embeddingFn,
+  client = new QdrantClient({
+    url: QDRANT_URL,
+    ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
 
+  const collections = await client.getCollections();
+  const exists = collections.collections.some((c) => c.name === COLLECTION_NAME);
+
+  if (!exists) {
+    await client.createCollection(COLLECTION_NAME, {
+      vectors: {
+        size: VECTOR_SIZE,
+        distance: "Cosine",
+      },
+    });
+  }
+
   initialized = true;
-  console.log("[Memory] ChromaDB connected");
+  console.log("[Memory] Qdrant connected");
 }
 
-/**
- * Save a Q&A pair to ChromaDB — only if question is not similar to existing ones
- */
-// Base knowledge — extract meaningful phrases from knowledge/base.md
+function generatePointId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// --- Base Knowledge Overlap Detection ---
+
 let baseKnowledgePhrases: string[] = [];
 
 export function setBaseKnowledge(content: string): void {
-  // Extract meaningful phrases (2+ words) from base knowledge
   const lower = content.toLowerCase();
 
-  // Extract lines that contain actual content (not headers/formatting)
   const lines = lower
     .split("\n")
     .map((l) => l.replace(/^[#\-*>\s]+/, "").trim())
     .filter((l) => l.length > 3 && !l.startsWith("http"));
 
-  // Extract multi-word phrases and significant single words
   const phrases = new Set<string>();
 
   for (const line of lines) {
-    // Add full line as phrase if short enough
     if (line.length > 5 && line.length < 80) {
       phrases.add(line);
     }
 
-    // Extract names and key terms (capitalized words, quoted terms)
     const nameMatches = content.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/g) || [];
     for (const name of nameMatches) {
       phrases.add(name.toLowerCase());
     }
 
-    // Extract parenthesized terms like (panggilan: Ucup)
     const parenMatches = content.match(/\(([^)]+)\)/g) || [];
     for (const p of parenMatches) {
       const inner = p.slice(1, -1).toLowerCase();
@@ -129,7 +128,6 @@ function overlapsBaseKnowledge(question: string, answer: string): boolean {
 
   const combined = (question + " " + answer).toLowerCase();
 
-  // Count how many base knowledge phrases match
   let matchCount = 0;
   for (const phrase of baseKnowledgePhrases) {
     if (combined.includes(phrase)) {
@@ -137,10 +135,226 @@ function overlapsBaseKnowledge(question: string, answer: string): boolean {
     }
   }
 
-  // If 2+ phrases match, it's overlapping with base knowledge
   return matchCount >= 2;
 }
 
+// --- Knowledge Training (file → Qdrant) ---
+
+function chunkMarkdown(content: string, source: string): Array<{ text: string; source: string }> {
+  const chunks: Array<{ text: string; source: string }> = [];
+  const lines = content.split("\n");
+
+  let currentH1 = "";
+  let currentH2 = "";
+  let buffer: string[] = [];
+
+  const flushBuffer = () => {
+    const text = buffer.join("\n").trim();
+    if (text.length > 10) {
+      // Prepend header context
+      let header = "";
+      if (currentH1) header += currentH1;
+      if (currentH2) header += (header ? " > " : "") + currentH2;
+
+      const fullText = header ? `[${header}]\n${text}` : text;
+      chunks.push({ text: fullText, source });
+    }
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      flushBuffer();
+      currentH2 = line.replace(/^##\s+/, "").trim();
+    } else if (line.startsWith("# ")) {
+      flushBuffer();
+      currentH1 = line.replace(/^#\s+/, "").trim();
+      currentH2 = "";
+    } else {
+      buffer.push(line);
+    }
+  }
+
+  flushBuffer();
+  return chunks;
+}
+
+/**
+ * Train knowledge: read all .md files from knowledgeDir, chunk, embed, and index to Qdrant.
+ * Replaces all existing knowledge_base entries.
+ */
+export async function trainKnowledge(knowledgeDir: string): Promise<number> {
+  try {
+    await init();
+
+    if (!fs.existsSync(knowledgeDir)) return 0;
+
+    const files = fs.readdirSync(knowledgeDir).filter((f) => f.endsWith(".md"));
+    if (files.length === 0) return 0;
+
+    // Collect all chunks from all files
+    const allChunks: Array<{ text: string; source: string }> = [];
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(knowledgeDir, file), "utf-8");
+      const chunks = chunkMarkdown(content, file);
+      allChunks.push(...chunks);
+    }
+
+    if (allChunks.length === 0) return 0;
+
+    // Delete all existing knowledge_base entries
+    try {
+      await client.delete(COLLECTION_NAME, {
+        filter: {
+          must: [{ key: "type", match: { value: "knowledge_base" } }],
+        },
+      });
+    } catch {
+      // Collection might be empty
+    }
+
+    // Embed all chunks in batches of 20
+    const BATCH_SIZE = 20;
+    let indexed = 0;
+
+    for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
+      const batch = allChunks.slice(i, i + BATCH_SIZE);
+      const texts = batch.map((c) => c.text);
+      const vectors = await embed(texts);
+
+      const points = batch.map((chunk, j) => ({
+        id: generatePointId(),
+        vector: vectors[j],
+        payload: {
+          document: chunk.text,
+          source: chunk.source,
+          type: "knowledge_base",
+          timestamp: new Date().toISOString(),
+        },
+      }));
+
+      await client.upsert(COLLECTION_NAME, { points });
+      indexed += batch.length;
+    }
+
+    console.log(`[Memory] Trained ${indexed} knowledge chunks from ${files.length} files`);
+    return indexed;
+  } catch (err) {
+    console.error("[Memory] Failed to train knowledge:", err);
+    return 0;
+  }
+}
+
+// --- Manual Knowledge (via !knowledge add, stored in Qdrant only) ---
+
+/**
+ * Add a manual knowledge entry to Qdrant (does NOT modify base.md)
+ */
+export async function addManualKnowledge(content: string): Promise<void> {
+  try {
+    await init();
+
+    const [vector] = await embed([content]);
+
+    await client.upsert(COLLECTION_NAME, {
+      points: [
+        {
+          id: generatePointId(),
+          vector,
+          payload: {
+            document: content,
+            type: "knowledge_manual",
+            timestamp: new Date().toISOString(),
+          },
+        },
+      ],
+    });
+
+    console.log(`[Memory] Saved manual knowledge: "${content.slice(0, 50)}..."`);
+  } catch (err) {
+    console.error("[Memory] Failed to save manual knowledge:", err);
+  }
+}
+
+/**
+ * List all manual knowledge entries from Qdrant
+ */
+export async function listManualKnowledge(): Promise<Array<{ id: string; content: string; timestamp: string }>> {
+  try {
+    await init();
+
+    const result = await client.scroll(COLLECTION_NAME, {
+      filter: {
+        must: [{ key: "type", match: { value: "knowledge_manual" } }],
+      },
+      with_payload: true,
+      limit: 100,
+    });
+
+    return result.points
+      .map((p) => {
+        const payload = p.payload as Record<string, unknown> | null;
+        return {
+          id: String(p.id),
+          content: String(payload?.document || ""),
+          timestamp: String(payload?.timestamp || ""),
+        };
+      })
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  } catch (err) {
+    console.error("[Memory] Failed to list manual knowledge:", err);
+    return [];
+  }
+}
+
+/**
+ * Delete a manual knowledge entry by index (1-based)
+ */
+export async function deleteManualKnowledge(index: number): Promise<{ success: boolean; content?: string }> {
+  try {
+    const entries = await listManualKnowledge();
+    const idx = index - 1;
+
+    if (idx < 0 || idx >= entries.length) {
+      return { success: false };
+    }
+
+    const entry = entries[idx];
+    await client.delete(COLLECTION_NAME, {
+      points: [entry.id],
+    });
+
+    return { success: true, content: entry.content };
+  } catch (err) {
+    console.error("[Memory] Failed to delete manual knowledge:", err);
+    return { success: false };
+  }
+}
+
+/**
+ * Clear all manual knowledge entries from Qdrant
+ */
+export async function clearManualKnowledge(): Promise<void> {
+  try {
+    await init();
+
+    await client.delete(COLLECTION_NAME, {
+      filter: {
+        must: [{ key: "type", match: { value: "knowledge_manual" } }],
+      },
+    });
+
+    console.log("[Memory] Cleared all manual knowledge");
+  } catch (err) {
+    console.error("[Memory] Failed to clear manual knowledge:", err);
+  }
+}
+
+// --- Q&A Memory ---
+
+/**
+ * Save a Q&A pair to Qdrant — only if question is not similar to existing ones
+ */
 export async function saveQA(
   chatId: string,
   question: string,
@@ -150,7 +364,6 @@ export async function saveQA(
   try {
     if (!question || question.length < 5) return;
 
-    // Skip if overlaps with base knowledge
     if (overlapsBaseKnowledge(question, answer)) {
       console.log(`[Memory] Skip Q&A (overlaps base knowledge): "${question.slice(0, 40)}..."`);
       return;
@@ -158,45 +371,50 @@ export async function saveQA(
 
     await init();
 
+    const [vector] = await embed([question]);
+
     // Check if similar question already exists
     try {
-      const existing = await collection.query({
-        queryTexts: [question],
-        nResults: 1,
+      const existing = await client.search(COLLECTION_NAME, {
+        vector,
+        limit: 1,
+        score_threshold: 0.85,
+        filter: {
+          must: [{ key: "type", match: { value: "qa" } }],
+        },
       });
 
-      const existingId = existing?.ids?.[0]?.[0];
-      const existingQ = existing?.documents?.[0]?.[0];
-      const existingAnswer = existing?.metadatas?.[0]?.[0]?.answer;
-      const distance = existing?.distances?.[0]?.[0];
+      if (existing.length > 0) {
+        const point = existing[0];
+        const existingAnswer = point.payload?.answer;
 
-      if (existingId && existingQ && typeof distance === "number" && distance < 0.3) {
-        // Same question exists — update answer if different
         if (existingAnswer === answer) {
           console.log(`[Memory] Skip identical Q&A: "${question.slice(0, 40)}..."`);
           return;
         }
 
-        // Update: delete old, save new with updated answer
-        await collection.delete({ ids: [existingId] });
+        await client.delete(COLLECTION_NAME, {
+          points: [point.id],
+        });
         console.log(`[Memory] Updating Q&A: "${question.slice(0, 40)}..."`);
       }
     } catch {
       // Collection might be empty, continue saving
     }
 
-    const id = `qa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    await collection.add({
-      ids: [id],
-      documents: [question],
-      metadatas: [
+    await client.upsert(COLLECTION_NAME, {
+      points: [
         {
-          chatId,
-          sender,
-          answer,
-          timestamp: new Date().toISOString(),
-          type: "qa",
+          id: generatePointId(),
+          vector,
+          payload: {
+            document: question,
+            chatId,
+            sender,
+            answer,
+            timestamp: new Date().toISOString(),
+            type: "qa",
+          },
         },
       ],
     });
@@ -207,8 +425,10 @@ export async function saveQA(
   }
 }
 
+// --- Query (searches all types: knowledge_base, knowledge_manual, qa) ---
+
 /**
- * Query relevant Q&A pairs from ChromaDB
+ * Query relevant context from Qdrant (knowledge + Q&A)
  */
 export async function queryMemory(
   query: string,
@@ -217,55 +437,43 @@ export async function queryMemory(
   try {
     await init();
 
-    const results = await collection.query({
-      queryTexts: [query],
-      nResults: limit,
+    const [vector] = await embed([query]);
+
+    const results = await client.search(COLLECTION_NAME, {
+      vector,
+      limit,
+      with_payload: true,
     });
 
-    if (!results.documents?.[0]) return [];
+    if (!results.length) return [];
 
-    // Build entries with timestamp, sort newest first
-    const entries = results.documents[0]
-      .map((doc, i) => {
-        if (!doc) return null;
-        const meta = results.metadatas?.[0]?.[i];
-        const answer = meta?.answer || "";
-        const sender = meta?.sender || "unknown";
-        const timestamp = String(meta?.timestamp || "");
-        return { doc, answer, sender, timestamp };
+    const entries = results
+      .map((point) => {
+        const p = point.payload as Record<string, unknown> | null;
+        if (!p?.document) return null;
+
+        const type = String(p.type || "");
+        const doc = String(p.document);
+
+        if (type === "knowledge_base" || type === "knowledge_manual") {
+          return {
+            formatted: `[Knowledge] ${doc}`,
+            timestamp: String(p.timestamp || ""),
+          };
+        }
+
+        // Q&A type
+        return {
+          formatted: `Q (${p.sender || "unknown"}, ${p.timestamp || ""}): ${doc}\nA: ${p.answer || ""}`,
+          timestamp: String(p.timestamp || ""),
+        };
       })
       .filter((e): e is NonNullable<typeof e> => e !== null)
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
-    return entries.map((e) => `Q (${e.sender}, ${e.timestamp}): ${e.doc}\nA: ${e.answer}`);
+    return entries.map((e) => e.formatted);
   } catch (err) {
     console.error("[Memory] Failed to query:", err);
     return [];
-  }
-}
-
-/**
- * Save knowledge entry to ChromaDB
- */
-export async function saveKnowledge(content: string): Promise<void> {
-  try {
-    await init();
-
-    const id = `knowledge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    await collection.add({
-      ids: [id],
-      documents: [content],
-      metadatas: [
-        {
-          sender: "system",
-          chatId: "knowledge",
-          timestamp: new Date().toISOString(),
-          type: "knowledge",
-        },
-      ],
-    });
-  } catch (err) {
-    console.error("[Memory] Failed to save knowledge:", err);
   }
 }
