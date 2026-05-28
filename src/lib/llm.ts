@@ -1,5 +1,8 @@
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const MODELS = (process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini")
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "http://localhost:3002/v1";
+const LLM_API_KEY = process.env.LLM_API_KEY || "";
+const LLM_AUTH_USER = process.env.LLM_AUTH_USER || "";
+const LLM_AUTH_PASS = process.env.LLM_AUTH_PASS || "";
+const MODELS = (process.env.LLM_MODELS || "llama3")
   .split(",")
   .map((m) => m.trim())
   .filter(Boolean);
@@ -19,7 +22,7 @@ interface ContentPart {
   image_url?: { url: string };
 }
 
-interface OpenRouterResponse {
+interface ChatResponse {
   choices: { message: { content: string } }[];
 }
 
@@ -31,13 +34,19 @@ async function fetchWithTimeout(body: string): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (LLM_AUTH_USER) {
+    headers["Authorization"] = "Basic " + Buffer.from(`${LLM_AUTH_USER}:${LLM_AUTH_PASS}`).toString("base64");
+  } else if (LLM_API_KEY) {
+    headers["Authorization"] = `Bearer ${LLM_API_KEY}`;
+  }
+
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       body,
       signal: controller.signal,
     });
@@ -64,13 +73,13 @@ async function tryModel(
       const res = await fetchWithTimeout(body);
 
       if (res.ok) {
-        const data: OpenRouterResponse = await res.json();
+        const data: ChatResponse = await res.json();
         const content = data?.choices?.[0]?.message?.content;
         if (!content) {
-          console.error(`[OpenRouter] ${model} returned empty response`);
+          console.error(`[LLM] ${model} returned empty response`);
           return null;
         }
-        console.log(`[OpenRouter] Success with model: ${model}${attempt > 0 ? " (retry)" : ""}`);
+        console.log(`[LLM] Success with model: ${model}${attempt > 0 ? " (retry)" : ""}`);
         lastUsedModel = model;
         return content;
       }
@@ -79,17 +88,17 @@ async function tryModel(
         const text = await res.text();
         const retryMatch = text.match(/"retry_after_seconds":(\d+)/);
         const waitSec = retryMatch ? parseInt(retryMatch[1]) : 10;
-        console.log(`[OpenRouter] ${model} rate limited, retrying in ${waitSec}s`);
+        console.log(`[LLM] ${model} rate limited, retrying in ${waitSec}s`);
         await sleep(waitSec * 1000);
         continue;
       }
 
       const text = await res.text();
-      console.error(`[OpenRouter] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
+      console.error(`[LLM] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
       return null;
     } catch (err) {
       const msg = err instanceof Error ? err.name : String(err);
-      console.error(`[OpenRouter] ${model} error: ${msg}${attempt < MAX_ATTEMPTS - 1 ? ", retrying" : ""}`);
+      console.error(`[LLM] ${model} error: ${msg}${attempt < MAX_ATTEMPTS - 1 ? ", retrying" : ""}`);
       if (attempt < MAX_ATTEMPTS - 1) continue;
       return null;
     }
@@ -103,10 +112,10 @@ export async function chat(
   messages: ChatMessage[]
 ): Promise<string> {
   for (const model of MODELS) {
-    console.log(`[OpenRouter] Trying model: ${model}`);
+    console.log(`[LLM] Trying model: ${model}`);
     const result = await tryModel(model, messages, systemPrompt);
     if (result) return result;
   }
 
-  throw new Error(`OpenRouter: all models failed (${MODELS.join(", ")})`);
+  throw new Error(`LLM: all models failed (${MODELS.join(", ")})`);
 }

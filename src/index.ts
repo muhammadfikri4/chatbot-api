@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import express, { Request, Response } from "express";
-import { chat, lastUsedModel } from "./lib/openrouter";
+import { chat, lastUsedModel } from "./lib/llm";
 import { sendText, sendVoice, sendSeen, startTyping, stopTyping, getMediaUrl, getGroupInfo } from "./lib/waha";
 import { textToSpeech } from "./lib/tts";
 import { searchWeb, fetchPageContent } from "./lib/search";
@@ -356,7 +356,6 @@ ${memories.join("\n\n")}
       }
     }
 
-    // Call OpenRouter
     let reply = await chat(dynamicPrompt, history as never);
 
     // Handle search request from model

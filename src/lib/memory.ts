@@ -4,23 +4,33 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY || "";
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "http://localhost:3002/v1";
+const LLM_API_KEY = process.env.LLM_API_KEY || "";
+const LLM_AUTH_USER = process.env.LLM_AUTH_USER || "";
+const LLM_AUTH_PASS = process.env.LLM_AUTH_PASS || "";
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "nomic-embed-text";
+const VECTOR_SIZE = parseInt(process.env.VECTOR_SIZE || "768");
 
 const COLLECTION_NAME = "chat_memory";
-const VECTOR_SIZE = 1536; // text-embedding-3-small
 
 // --- Embedding ---
 
 async function embed(texts: string[]): Promise<number[][]> {
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (LLM_AUTH_USER) {
+      headers["Authorization"] = "Basic " + Buffer.from(`${LLM_AUTH_USER}:${LLM_AUTH_PASS}`).toString("base64");
+    } else if (LLM_API_KEY) {
+      headers["Authorization"] = `Bearer ${LLM_API_KEY}`;
+    }
+
+    const res = await fetch(`${LLM_BASE_URL}/embeddings`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify({
-        model: "openai/text-embedding-3-small",
+        model: EMBEDDING_MODEL,
         input: texts,
       }),
     });
@@ -58,6 +68,7 @@ async function init(): Promise<void> {
 
   client = new QdrantClient({
     url: QDRANT_URL,
+    port: QDRANT_URL.startsWith("https") ? 443 : 6333,
     ...(QDRANT_API_KEY ? { apiKey: QDRANT_API_KEY } : {}),
   });
 
