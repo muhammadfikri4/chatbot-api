@@ -7,7 +7,7 @@ const MODELS = (process.env.LLM_MODELS || "llama3")
   .map((m) => m.trim())
   .filter(Boolean);
 const MAX_ATTEMPTS = 2;
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 120000;
 
 export let lastUsedModel = "";
 
