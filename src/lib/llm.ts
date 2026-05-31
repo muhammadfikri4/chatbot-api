@@ -70,10 +70,14 @@ async function tryModel(
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
+      const start = Date.now();
+      console.log(`[LLM] ${model} attempt ${attempt + 1}/${MAX_ATTEMPTS}, fetching...`);
       const res = await fetchWithTimeout(body);
+      console.log(`[LLM] ${model} response received in ${Date.now() - start}ms, status: ${res.status}`);
 
       if (res.ok) {
         const data: ChatResponse = await res.json();
+        console.log(`[LLM] ${model} body parsed in ${Date.now() - start}ms`);
         const content = data?.choices?.[0]?.message?.content;
         if (!content) {
           console.error(`[LLM] ${model} returned empty response`);
@@ -97,8 +101,9 @@ async function tryModel(
       console.error(`[LLM] ${model} failed (${res.status}): ${text.slice(0, 200)}`);
       return null;
     } catch (err) {
-      const msg = err instanceof Error ? err.name : String(err);
-      console.error(`[LLM] ${model} error: ${msg}${attempt < MAX_ATTEMPTS - 1 ? ", retrying" : ""}`);
+      const elapsed = Date.now();
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      console.error(`[LLM] ${model} error after attempt ${attempt + 1}: ${msg}`);
       if (attempt < MAX_ATTEMPTS - 1) continue;
       return null;
     }

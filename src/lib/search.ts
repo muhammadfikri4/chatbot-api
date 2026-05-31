@@ -168,7 +168,7 @@ export async function fetchPageContent(url: string): Promise<string> {
       .replace(/\s+/g, " ")
       .trim();
 
-    if (text.length > 2000) text = text.slice(0, 2000) + "...";
+    if (text.length > 800) text = text.slice(0, 800) + "...";
 
     return text;
   } catch {

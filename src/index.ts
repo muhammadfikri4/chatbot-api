@@ -9,6 +9,7 @@ import { searchWeb, fetchPageContent } from "./lib/search";
 import { transcribeAudio } from "./lib/transcribe";
 import { notifyError, notifyChat } from "./lib/discord";
 import { saveQA, queryMemory, setBaseKnowledge, trainKnowledge, addManualKnowledge, listManualKnowledge, deleteManualKnowledge, clearManualKnowledge } from "./lib/memory";
+import { startDiscordBot, setSystemPromptProvider } from "./lib/discord-bot";
 
 const app = express();
 app.use(express.json());
@@ -43,29 +44,26 @@ trainKnowledge(KNOWLEDGE_DIR).then((count) => {
 function buildSystemPrompt(): string {
   return `${
     process.env.SYSTEM_PROMPT ||
-    `Kamu adalah teman chat di WhatsApp. Bayangin kamu lagi balesin chat temen deket.
-- Singkat, 1-3 kalimat. Kayak chat biasa, bukan essay.
-- Santai dan gaul, boleh bercanda, roasting ringan, pake slang. Tapi jangan lebay.
-- Variasikan gaya jawaban. Kadang serius, kadang becanda, kadang singkat banget. Jangan monoton.
-- JANGAN selalu pake pembuka yang sama. Beda-bedain tiap jawaban.
-- MURNI bahasa Indonesia. DILARANG campur bahasa asing (China/中文, Rusia, Arab, Jepang, Korea). English umum boleh (OK, thanks, dll).
-- Jangan pake bullet point kecuali diminta.
-- Kalau kamu tau jawabannya, jawab natural seolah emang udah tau. Jangan bilang "aku ingat", "dari catatan", atau semacamnya.
-- JANGAN copy-paste. Selalu paraphrase pakai kata-kata sendiri.`
+    `Kamu teman chat WhatsApp. Bales kayak temen deket, BUKAN asisten formal.
+Pake "gue/lo/lu", JANGAN "saya/Anda". Singkat 1-3 kalimat, santai, gaul. Bahasa Indonesia.
+
+Contoh gaya jawaban yang BENAR:
+User: "halo bro"
+Bot: "[TEXT] Yo wazzup bro, ada apa nih?"
+User: "lo bisa apa aja?"
+Bot: "[TEXT] Banyak bro, mau nanya apa aja gas. Mau cari info juga bisa."
+User: "jawab pake vn dong"
+Bot: "[VOICE] Oke siap bro, gue jawab pake suara ya."`
   }
 
-FORMAT BALASAN: Setiap jawaban HARUS diawali dengan tag format balasan di baris pertama, sebelum isi jawaban:
-- [TEXT] — jika user tidak minta dibalas pakai suara (DEFAULT, gunakan ini kalau ragu)
-- [VOICE] — HANYA jika user secara eksplisit minta dibalas pakai suara/voice/vn/audio
-Contoh: user bilang "jawab pake vn dong" → baris pertama: [VOICE], lalu jawaban. User bilang "halo" → baris pertama: [TEXT], lalu jawaban.
+Awali jawaban dengan [TEXT] atau [VOICE] (kalau diminta suara).
+Kalau butuh cari info dari internet, jawab [SEARCH: kata kunci] saja.
 
-FITUR SEARCH: Kamu PUNYA akses internet. Kalau kamu butuh info yang tidak kamu tau atau user minta cari sesuatu, jawab HANYA dengan format [SEARCH: kata kunci]. Jangan tambah teks lain. Jangan pernah bilang "ga bisa akses internet". Kalau bisa jawab sendiri (knowledge base, pengetahuan umum, matematika), jawab langsung tanpa search.
+Kemampuan lo: jawab pertanyaan umum, cari info di internet, kasih rekomendasi tempat, ngobrol santai, roasting temen, dan bantuin hal-hal sehari-hari.
 
-Berikut adalah knowledge base tambahan. Jika pertanyaan user berkaitan dengan informasi di bawah ini, PRIORITASKAN jawaban dari knowledge base. Untuk pertanyaan umum seperti matematika, sains, sejarah, bahasa, dan pengetahuan umum lainnya, jawab dengan pengetahuanmu sendiri secara normal. Hanya arahkan ke pembuat bot jika pertanyaan benar-benar di luar kemampuanmu.
-
-=== KNOWLEDGE BASE ===
+=== INFO ===
 ${currentKnowledge}
-=== END KNOWLEDGE BASE ===`;
+=== END ===`;
 }
 
 let systemPrompt = buildSystemPrompt();
@@ -309,14 +307,10 @@ app.post("/webhook", async (req: Request, res: Response) => {
       const memories = await queryMemory(cleanMessage, 5);
       if (memories.length > 0) {
         const currentSenderName = isOwner ? "Fikri" : (payload._data?.pushName || senderRaw);
-        memoryContext = `\n\n=== CONTEXT ===
-Info yang kamu tau. Aturan:
-- Jawab natural, JANGAN bilang "aku ingat/dari catatan". JANGAN copy-paste. Paraphrase.
-- Pengirim saat ini: ${currentSenderName}. Prioritaskan info dari dia.
-- Info dari orang lain boleh dipakai kalau relevan.
-- Kalau ada info yang BERTENTANGAN, pakai yang TERBARU (lihat timestamp).
-${memories.join("\n\n")}
-=== END CONTEXT ===`;
+        memoryContext = `\n\n=== MEMORY ===
+Pengirim: ${currentSenderName}
+${memories.join("\n")}
+=== END ===`;
       }
     } catch {
       // Memory query failed, continue without it
@@ -369,11 +363,12 @@ ${memories.join("\n\n")}
       const results = await searchWeb(query);
       console.log(`[${chatId}] Search results: ${results.length}`, results.map((r) => r.url));
       if (results.length > 0) {
-        // Fetch page content from top results
+        // Fetch page content from top 2 results only (keep prompt small for local LLM)
+        const topResults = results.slice(0, 2);
         const pages = await Promise.all(
-          results.map(async (r) => {
+          topResults.map(async (r) => {
             const content = await fetchPageContent(r.url);
-            return `Sumber: ${r.title} (${r.url})\n${r.snippet}\n${content}`;
+            return `Sumber: ${r.title}\n${r.snippet}\n${content}`;
           })
         );
 
@@ -462,6 +457,10 @@ ${memories.join("\n\n")}
     notifyError(`Webhook (${chatId || "unknown"})`, msg).catch(() => {});
   }
 });
+
+// Start Discord bot
+setSystemPromptProvider(() => buildSystemPrompt());
+startDiscordBot();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
